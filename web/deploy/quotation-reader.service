@@ -1,0 +1,19 @@
+[Unit]
+Description=Quotation Reader API (FastAPI + React)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/quotation-reader/web/backend
+Environment=PATH=/home/quotation-reader/web/backend/.venv/bin
+ExecStart=/home/quotation-reader/web/backend/.venv/bin/python run.py
+Restart=always
+RestartSec=5
+
+# Optional: limit logs noise
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

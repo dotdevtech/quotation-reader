@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.venv/
+**/node_modules/
+web/backend/.env
+web/backend/data/
+web/backend/exports/
+*.log
+.DS_Store
+Thumbs.db
+dist/
+.quotation_reader/
