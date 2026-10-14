@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api, type Offer } from '../api'
 
+/** Shown first and largest on Quote data tab. */
+const QUOTE_HERO_FIELDS = ['VENDOR COMPANY', 'VENDOR ADDRESS COUNTRY'] as const
+
 /** Same for the whole email / quotation (vendor + tender + terms). */
 const SHARED_FIELDS = [
   'QUOTE REFERENCE',
@@ -28,6 +31,22 @@ const SHARED_FIELDS = [
   'VENDOR WEBSITE',
   'PLATFORM',
   'PRODUCT LINK',
+] as const
+
+const SHARED_FIELDS_REST = SHARED_FIELDS.filter(
+  (k) => !(QUOTE_HERO_FIELDS as readonly string[]).includes(k),
+)
+
+/** Distinct colors per part tab (cycles if more parts than colors). */
+const PART_TAB_COLORS = [
+  { active: 'border-2 border-b-0 border-sky-600 bg-sky-100 text-sky-950 shadow-sm', idle: 'border-2 border-sky-400 bg-sky-50 text-sky-800 hover:bg-sky-100' },
+  { active: 'border-2 border-b-0 border-violet-600 bg-violet-100 text-violet-950 shadow-sm', idle: 'border-2 border-violet-400 bg-violet-50 text-violet-800 hover:bg-violet-100' },
+  { active: 'border-2 border-b-0 border-amber-600 bg-amber-100 text-amber-950 shadow-sm', idle: 'border-2 border-amber-400 bg-amber-50 text-amber-900 hover:bg-amber-100' },
+  { active: 'border-2 border-b-0 border-emerald-600 bg-emerald-100 text-emerald-950 shadow-sm', idle: 'border-2 border-emerald-400 bg-emerald-50 text-emerald-800 hover:bg-emerald-100' },
+  { active: 'border-2 border-b-0 border-rose-600 bg-rose-100 text-rose-950 shadow-sm', idle: 'border-2 border-rose-400 bg-rose-50 text-rose-800 hover:bg-rose-100' },
+  { active: 'border-2 border-b-0 border-orange-600 bg-orange-100 text-orange-950 shadow-sm', idle: 'border-2 border-orange-400 bg-orange-50 text-orange-900 hover:bg-orange-100' },
+  { active: 'border-2 border-b-0 border-teal-600 bg-teal-100 text-teal-950 shadow-sm', idle: 'border-2 border-teal-400 bg-teal-50 text-teal-800 hover:bg-teal-100' },
+  { active: 'border-2 border-b-0 border-fuchsia-600 bg-fuchsia-100 text-fuchsia-950 shadow-sm', idle: 'border-2 border-fuchsia-400 bg-fuchsia-50 text-fuchsia-800 hover:bg-fuchsia-100' },
 ] as const
 
 /** Changes per part line inside one email. */
@@ -89,7 +108,32 @@ const DEFAULT_CERTS = [
 ]
 
 const inputClass =
-  'w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 outline-none ring-red-500/30 focus:border-red-500 focus:ring-2'
+  'w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-center text-base text-zinc-900 outline-none ring-red-500/30 focus:border-red-500 focus:ring-2'
+
+/** Filled fields: tinted background, bold, larger, centered. */
+const filledInputClass =
+  'w-full rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2.5 text-center text-xl font-bold text-zinc-900 outline-none ring-emerald-500/30 focus:border-emerald-500 focus:ring-2'
+
+function fieldInputClass(value: string, readOnly = false) {
+  const has = Boolean(value.trim()) && value.trim() !== '—'
+  if (readOnly && has) return `${filledInputClass} bg-emerald-50/80 text-zinc-800`
+  if (readOnly) return `${inputClass} bg-zinc-100 text-zinc-600`
+  return has ? filledInputClass : inputClass
+}
+
+/** Labels: strong color so they are easy to spot (separate from filled values). */
+const labelClass =
+  'mb-1.5 block text-center rounded bg-indigo-100 px-2 py-0.5 text-xs font-bold uppercase tracking-wide text-indigo-900'
+
+const heroLabelClass =
+  'mb-1 block text-center rounded bg-amber-200 px-2 py-0.5 text-xs font-bold uppercase tracking-wide text-amber-950'
+
+function heroInputClass(value: string) {
+  const has = Boolean(value.trim())
+  return has
+    ? 'w-full rounded-md border-2 border-amber-400 bg-amber-50 px-3 py-2.5 text-center text-xl font-bold text-zinc-900 outline-none ring-amber-500/30 focus:border-amber-500 focus:ring-2'
+    : 'w-full rounded-md border-2 border-dashed border-amber-300 bg-white px-3 py-2.5 text-center text-lg text-zinc-400 outline-none focus:border-amber-500 focus:ring-2'
+}
 
 function parseCerts(value: unknown): string[] {
   if (value == null || value === '') return []
@@ -283,13 +327,14 @@ export default function OffersEditor({
     onChange: (v: string) => void,
     opts?: { readOnly?: boolean },
   ) => {
+    const cls = `${fieldInputClass(value, opts?.readOnly)} cursor-pointer`
     if (key === 'CONDITION') {
       const known = !value || conditionOpts.includes(value)
       return (
         <select
           value={known ? value : ''}
           onChange={(e) => onChange(e.target.value)}
-          className={`${inputClass} cursor-pointer`}
+          className={cls}
         >
           <option value="">— Select —</option>
           {conditionOpts.map((o) => (
@@ -306,7 +351,7 @@ export default function OffersEditor({
         <select
           value={known ? value : ''}
           onChange={(e) => onChange(e.target.value)}
-          className={`${inputClass} cursor-pointer`}
+          className={cls}
         >
           <option value="">— Select —</option>
           {priceTypeOpts.map((o) => (
@@ -318,22 +363,34 @@ export default function OffersEditor({
       )
     }
     if (key === 'CERTIFICATION DOCUMENTS') {
+      const hasAny = selectedCerts.size > 0
       return (
-        <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
-          {certOpts.map((opt) => (
-            <label
-              key={opt}
-              className="flex cursor-pointer items-center gap-2 rounded-md border border-zinc-200 bg-white px-2.5 py-1.5 text-sm text-zinc-800 hover:bg-zinc-50"
-            >
-              <input
-                type="checkbox"
-                className="cursor-pointer accent-red-600"
-                checked={selectedCerts.has(opt)}
-                onChange={() => toggleCert(opt)}
-              />
-              {opt}
-            </label>
-          ))}
+        <div
+          className={`grid grid-cols-1 gap-1.5 rounded-md p-2 sm:grid-cols-2 ${
+            hasAny ? 'border border-emerald-300 bg-emerald-50' : ''
+          }`}
+        >
+          {certOpts.map((opt) => {
+            const on = selectedCerts.has(opt)
+            return (
+              <label
+                key={opt}
+                className={`flex cursor-pointer items-center gap-2 rounded-md border px-2.5 py-1.5 hover:bg-zinc-50 ${
+                  on
+                    ? 'border-emerald-400 bg-emerald-100 text-center text-xl font-bold text-zinc-900'
+                    : 'border-zinc-200 bg-white text-center text-base text-zinc-800'
+                }`}
+              >
+                <input
+                  type="checkbox"
+                  className="cursor-pointer accent-emerald-600"
+                  checked={on}
+                  onChange={() => toggleCert(opt)}
+                />
+                {opt}
+              </label>
+            )
+          })}
           {unknownCerts.length > 0 && (
             <p className="col-span-full text-[11px] text-amber-700">
               Extra cert text: {unknownCerts.join('; ')}
@@ -347,7 +404,7 @@ export default function OffersEditor({
         <select
           value={value || ''}
           onChange={(e) => onChange(e.target.value)}
-          className={`${inputClass} cursor-pointer`}
+          className={cls}
         >
           <option value="">— Select —</option>
           <option value="Yes">Yes</option>
@@ -361,7 +418,7 @@ export default function OffersEditor({
           value={value}
           onChange={(e) => onChange(e.target.value)}
           rows={3}
-          className={inputClass}
+          className={fieldInputClass(value)}
         />
       )
     }
@@ -370,7 +427,7 @@ export default function OffersEditor({
         value={value}
         readOnly={opts?.readOnly}
         onChange={(e) => onChange(e.target.value)}
-        className={`${inputClass} ${opts?.readOnly ? 'bg-zinc-100 text-zinc-600' : ''}`}
+        className={fieldInputClass(value, opts?.readOnly)}
       />
     )
   }
@@ -386,6 +443,8 @@ export default function OffersEditor({
       'CREDIT CARD': 'Credit Card Fee (%)',
       'WIRE PAYMENT': 'Wire Transfer Fee',
       NOTES: 'Additional Notes',
+      'VENDOR COMPANY': 'Vendor Name',
+      'VENDOR ADDRESS COUNTRY': 'Country',
       'PART NUMBER': 'Part Number',
       'ALTERNATE PART NUMBER': 'Alternate Part Number',
       'QUANTITY OFFERED': 'Qty Offered',
@@ -454,23 +513,25 @@ export default function OffersEditor({
           >
             Quote data
           </button>
-          {draft.map((_, i) => (
-            <button
-              key={i}
-              type="button"
-              onClick={() => setPanel(i)}
-              className={`cursor-pointer rounded-t px-3 py-2 text-xs font-semibold ${
-                panel === i
-                  ? 'border border-b-0 border-zinc-200 bg-[#f7f7f8] text-red-700'
-                  : 'text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900'
-              }`}
-            >
-              Part {i + 1}
-              {draft[i]?.['PART NUMBER']
-                ? ` · ${String(draft[i]['PART NUMBER']).slice(0, 16)}`
-                : ''}
-            </button>
-          ))}
+          {draft.map((_, i) => {
+            const colors = PART_TAB_COLORS[i % PART_TAB_COLORS.length]
+            const active = panel === i
+            return (
+              <button
+                key={i}
+                type="button"
+                onClick={() => setPanel(i)}
+                className={`cursor-pointer rounded-t px-3.5 py-2.5 text-xs font-bold ${
+                  active ? colors.active : colors.idle
+                }`}
+              >
+                Part {i + 1}
+                {draft[i]?.['PART NUMBER']
+                  ? ` · ${String(draft[i]['PART NUMBER']).slice(0, 16)}`
+                  : ''}
+              </button>
+            )
+          })}
         </div>
       )}
 
@@ -482,33 +543,85 @@ export default function OffersEditor({
           </div>
         )}
         {extractionId && panel === 'quote' && (
-          <div className="rounded-lg border border-zinc-200 bg-white p-3">
-            <p className="mb-3 text-[11px] text-zinc-500">
-              Vendor, tender, and terms — same for every part in this email. Date is from when the
-              email was received.
-            </p>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <label className="block sm:col-span-2">
-                <span className="mb-1 block text-xs font-semibold text-zinc-700">Date</span>
-                <input
-                  value={emailDate || '—'}
-                  readOnly
-                  className={`${inputClass} bg-zinc-100 text-zinc-600`}
-                />
-              </label>
-              {SHARED_FIELDS.map((key) => (
-                <label
-                  key={key}
-                  className={`block ${key === 'NOTES' || key.startsWith('VENDOR ADDRESS') ? 'sm:col-span-2' : ''}`}
-                >
-                  <span className="mb-1 block text-xs font-semibold text-zinc-700">
-                    {labelFor(key)}
-                  </span>
-                  {renderInput(key, shared[key] != null ? String(shared[key]) : '', (v) =>
-                    setSharedField(key, v),
-                  )}
+          <div className="space-y-3">
+            <div className="rounded-lg border-2 border-amber-300 bg-amber-50/60 p-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                {QUOTE_HERO_FIELDS.map((key) => {
+                  const value = shared[key] != null ? String(shared[key]) : ''
+                  return (
+                    <label key={key} className="block min-w-0">
+                      <span className={heroLabelClass}>{labelFor(key)}</span>
+                      <input
+                        value={value}
+                        onChange={(e) => setSharedField(key, e.target.value)}
+                        placeholder={key === 'VENDOR COMPANY' ? 'Vendor company name' : 'Country'}
+                        className={heroInputClass(value)}
+                      />
+                    </label>
+                  )
+                })}
+              </div>
+            </div>
+
+            <div className="rounded-lg border-2 border-sky-300 bg-sky-50/70 p-3">
+              <div className="mb-2 flex flex-wrap items-center justify-center gap-2 text-center">
+                <span className="rounded bg-sky-200 px-2 py-0.5 text-xs font-bold uppercase tracking-wide text-sky-950">
+                  Products quoted
+                </span>
+                <span className="rounded-md bg-sky-600 px-4 py-1.5 text-3xl font-extrabold leading-none text-white">
+                  {draft.length}
+                </span>
+                <span className="text-xs font-semibold text-sky-800">
+                  {draft.length === 1 ? 'part line' : 'part lines'} in this email
+                </span>
+              </div>
+              <div className="flex flex-wrap justify-center gap-2">
+                {draft.map((o, i) => {
+                  const pn = o['PART NUMBER'] != null ? String(o['PART NUMBER']).trim() : ''
+                  const colors = PART_TAB_COLORS[i % PART_TAB_COLORS.length]
+                  return (
+                    <button
+                      key={i}
+                      type="button"
+                      onClick={() => setPanel(i)}
+                      title={`Open Part ${i + 1}`}
+                      className={`cursor-pointer rounded-md border-2 px-3 py-1.5 text-sm font-bold ${colors.idle}`}
+                    >
+                      {pn || `Part ${i + 1} (no P/N)`}
+                    </button>
+                  )
+                })}
+                {draft.length === 0 && (
+                  <span className="text-sm text-sky-700">No part lines yet.</span>
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-zinc-200 bg-white p-3">
+              <p className="mb-3 text-[11px] text-zinc-500">
+                Quote date, references, terms, and other vendor details.
+              </p>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="block sm:col-span-2">
+                  <span className={labelClass}>Date</span>
+                  <input
+                    value={emailDate || '—'}
+                    readOnly
+                    className={fieldInputClass(emailDate || '—', true)}
+                  />
                 </label>
-              ))}
+                {SHARED_FIELDS_REST.map((key) => (
+                  <label
+                    key={key}
+                    className={`block ${key === 'NOTES' || key.startsWith('VENDOR ADDRESS') ? 'sm:col-span-2' : ''}`}
+                  >
+                    <span className={labelClass}>{labelFor(key)}</span>
+                    {renderInput(key, shared[key] != null ? String(shared[key]) : '', (v) =>
+                      setSharedField(key, v),
+                    )}
+                  </label>
+                ))}
+              </div>
             </div>
           </div>
         )}
@@ -518,27 +631,71 @@ export default function OffersEditor({
               Part line {panel + 1} — part number, qty, price, delivery, certs, and other line-level
               fields.
             </p>
-            <div className="grid gap-3 sm:grid-cols-2">
-              {PART_FIELDS.map((key) => (
-                <label
-                  key={key}
-                  className={`block ${
-                    key === 'DESCRIPTION' || key === 'CERTIFICATION DOCUMENTS'
-                      ? 'sm:col-span-2'
-                      : ''
-                  }`}
-                >
-                  <span className="mb-1 block text-xs font-semibold text-zinc-700">
-                    {labelFor(key)}
-                  </span>
-                  {renderInput(
-                    key,
-                    current[key] != null ? String(current[key]) : '',
-                    (v) => setPartField(key, v),
-                  )}
-                </label>
-              ))}
-            </div>
+            {(() => {
+              const partField = (key: string, className = 'block min-w-0') => {
+                const value = current[key] != null ? String(current[key]) : ''
+                const isHero = key === 'PART NUMBER'
+                return (
+                  <label key={key} className={className}>
+                    <span className={isHero ? heroLabelClass : labelClass}>{labelFor(key)}</span>
+                    {isHero ? (
+                      <input
+                        value={value}
+                        onChange={(e) => setPartField(key, e.target.value)}
+                        placeholder="Part number"
+                        className={heroInputClass(value)}
+                      />
+                    ) : (
+                      renderInput(key, value, (v) => setPartField(key, v))
+                    )}
+                  </label>
+                )
+              }
+              return (
+                <div className="space-y-3">
+                  {/* 1. Part number — most visible */}
+                  <div className="rounded-lg border-2 border-amber-300 bg-amber-50/60 p-3">
+                    {partField('PART NUMBER')}
+                  </div>
+                  {/* 2. Description + Condition */}
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    {partField('DESCRIPTION')}
+                    {partField('CONDITION')}
+                  </div>
+                  {/* 3. Alternate + NSN */}
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    {partField('ALTERNATE PART NUMBER')}
+                    {partField('NSN')}
+                  </div>
+                  {/* 4. Qty offered + Qty required + UOM */}
+                  <div className="grid gap-3 sm:grid-cols-3">
+                    {partField('QUANTITY OFFERED')}
+                    {partField('QUANTITY REQUIRED')}
+                    {partField('UOM')}
+                  </div>
+                  {/* 5. Currency + Price each + Total */}
+                  <div className="grid gap-3 sm:grid-cols-3">
+                    {partField('CURRENCY')}
+                    {partField('PRICE UNIT')}
+                    {partField('TOTAL PRICE')}
+                  </div>
+                  {/* 6. Price type + Delivery + Trace */}
+                  <div className="grid gap-3 sm:grid-cols-3">
+                    {partField('PRICE TYPE')}
+                    {partField('DELIVERY LEAD')}
+                    {partField('TRACE')}
+                  </div>
+                  {/* 7. Certificates */}
+                  {partField('CERTIFICATION DOCUMENTS')}
+                  {/* 8. Package + Package qty + Package type */}
+                  <div className="grid gap-3 sm:grid-cols-3">
+                    {partField('PACKAGE')}
+                    {partField('PACKAGE QUANTITY')}
+                    {partField('PACKAGE TYPE')}
+                  </div>
+                </div>
+              )
+            })()}
           </div>
         )}
       </div>

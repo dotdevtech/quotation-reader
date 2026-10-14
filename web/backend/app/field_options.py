@@ -59,6 +59,7 @@ _CONDITION_ALIASES: dict[str, str] = {
     "sn stock new": "SN-Stock New",
     "oh": "OH-Overhauled",
     "o h": "OH-Overhauled",
+    "o/h": "OH-Overhauled",
     "overhauled": "OH-Overhauled",
     "oh overhauled": "OH-Overhauled",
     "rd": "RD-Repaired",
@@ -85,6 +86,17 @@ _CONDITION_ALIASES: dict[str, str] = {
     "none specified": "None Specified",
     "n s": "None Specified",
     "not specified": "None Specified",
+    # Values sometimes appear under a "CD" column header
+    "cd ne": "NE-NEW",
+    "cd ns": "NS-New Surplus",
+    "cd sn": "SN-Stock New",
+    "cd oh": "OH-Overhauled",
+    "cd rd": "RD-Repaired",
+    "cd ex": "EX-Exchange",
+    "cd ar": "AR-As Removed",
+    "cd fn": "FN- Factory New",
+    "cd sv": "SV- Serviceable",
+    "cd rb": "RB-Refurbish",
 }
 
 _PRICE_ALIASES: dict[str, str] = {
@@ -260,17 +272,179 @@ _PRICE_TYPE_KEY_ALIASES = {
     "QUOTE_TYPE",
 }
 
+_CONDITION_KEY_ALIASES = {
+    "CD",
+    "COND",
+    "COND.",
+    "C/D",
+    "COND CODE",
+    "CONDITION CODE",
+    "MATERIAL CONDITION",
+    "PART CONDITION",
+}
+
+_PRICE_UNIT_KEY_ALIASES = {
+    "UNIT PRICE",
+    "PRICE EACH",
+    "EACH",
+    "UNIT EACH",
+    "UNIT EA",
+    "EA PRICE",
+    "PER UNIT",
+    "PRICE UNIT $",
+    "SELL PRICE",
+    "NET UNIT PRICE",
+}
+
+_TOTAL_PRICE_KEY_ALIASES = {
+    "TOTAL",
+    "EXT",
+    "EXT.",
+    "EXTENSION",
+    "EXT PRICE",
+    "EXTENDED",
+    "EXTENDED PRICE",
+    "LINE TOTAL",
+    "LINE EXT",
+    "AMOUNT",
+    "NET AMOUNT",
+    "LINE AMOUNT",
+}
+
+
+def _fold_key_alias(
+    out: dict[str, Any], target: str, aliases: set[str]
+) -> None:
+    if target in out:
+        return
+    for alias in list(out.keys()):
+        if alias.upper().strip() in aliases:
+            out[target] = out.pop(alias)
+            break
+
+
+# US states for country inference when COUNTRY is missing
+_US_STATE_BY_CODE: dict[str, str] = {
+    "AL": "AL", "AK": "AK", "AZ": "AZ", "AR": "AR", "CA": "CA", "CO": "CO", "CT": "CT",
+    "DE": "DE", "FL": "FL", "GA": "GA", "HI": "HI", "ID": "ID", "IL": "IL", "IN": "IN",
+    "IA": "IA", "KS": "KS", "KY": "KY", "LA": "LA", "ME": "ME", "MD": "MD", "MA": "MA",
+    "MI": "MI", "MN": "MN", "MS": "MS", "MO": "MO", "MT": "MT", "NE": "NE", "NV": "NV",
+    "NH": "NH", "NJ": "NJ", "NM": "NM", "NY": "NY", "NC": "NC", "ND": "ND", "OH": "OH",
+    "OK": "OK", "OR": "OR", "PA": "PA", "RI": "RI", "SC": "SC", "SD": "SD", "TN": "TN",
+    "TX": "TX", "UT": "UT", "VT": "VT", "VA": "VA", "WA": "WA", "WV": "WV", "WI": "WI",
+    "WY": "WY", "DC": "DC",
+}
+
+_US_STATE_BY_NAME: dict[str, str] = {
+    "alabama": "AL", "alaska": "AK", "arizona": "AZ", "arkansas": "AR", "california": "CA",
+    "colorado": "CO", "connecticut": "CT", "delaware": "DE", "florida": "FL", "georgia": "GA",
+    "hawaii": "HI", "idaho": "ID", "illinois": "IL", "indiana": "IN", "iowa": "IA",
+    "kansas": "KS", "kentucky": "KY", "louisiana": "LA", "maine": "ME", "maryland": "MD",
+    "massachusetts": "MA", "michigan": "MI", "minnesota": "MN", "mississippi": "MS",
+    "missouri": "MO", "montana": "MT", "nebraska": "NE", "nevada": "NV", "new hampshire": "NH",
+    "new jersey": "NJ", "new mexico": "NM", "new york": "NY", "north carolina": "NC",
+    "north dakota": "ND", "ohio": "OH", "oklahoma": "OK", "oregon": "OR", "pennsylvania": "PA",
+    "rhode island": "RI", "south carolina": "SC", "south dakota": "SD", "tennessee": "TN",
+    "texas": "TX", "utah": "UT", "vermont": "VT", "virginia": "VA", "washington": "WA",
+    "west virginia": "WV", "wisconsin": "WI", "wyoming": "WY", "district of columbia": "DC",
+}
+
+_US_ZIP_RE = re.compile(r"^\d{5}(?:-\d{4})?$")
+_CITY_STATE_ZIP_RE = re.compile(
+    r"^\s*(?P<city>.+?)[,\s]+(?P<state>[A-Za-z]{2}|[A-Za-z][A-Za-z\s]+?)(?:\s+(?P<zip>\d{5}(?:-\d{4})?))?\s*$"
+)
+
+
+def _match_us_state(raw: str) -> str | None:
+    s = (raw or "").strip()
+    if not s:
+        return None
+    code = s.upper()
+    if code in _US_STATE_BY_CODE:
+        return code
+    return _US_STATE_BY_NAME.get(_norm(s))
+
+
+def _normalize_country(raw: str) -> str:
+    s = (raw or "").strip()
+    n = _norm(s)
+    if n in {
+        "usa",
+        "us",
+        "u s",
+        "u s a",
+        "united states",
+        "united states of america",
+        "america",
+    }:
+        return "USA"
+    return s
+
+
+def _looks_us_zip(raw: str) -> bool:
+    return bool(_US_ZIP_RE.match((raw or "").strip()))
+
+
+def normalize_vendor_address(out: dict[str, Any]) -> None:
+    """Infer/normalize vendor city, state, country and INTERNATIONAL VENDOR."""
+    city = str(out.get("VENDOR ADDRESS CITY") or "").strip()
+    state = str(out.get("VENDOR ADDRESS STATE") or "").strip()
+    zip_code = str(out.get("VENDOR ADDRESS ZIP CODE") or "").strip()
+    country = str(out.get("VENDOR ADDRESS COUNTRY") or "").strip()
+
+    # Try to split "City, ST 12345" left in CITY (or LINE 1 spill)
+    if city and (not state or not zip_code):
+        m = _CITY_STATE_ZIP_RE.match(city)
+        if m:
+            maybe_state = _match_us_state(m.group("state"))
+            if maybe_state or (not state and len(m.group("state").strip()) >= 2):
+                city = m.group("city").strip(" ,")
+                if not state:
+                    state = maybe_state or m.group("state").strip()
+                if not zip_code and m.group("zip"):
+                    zip_code = m.group("zip").strip()
+
+    us_state = _match_us_state(state) if state else None
+    if us_state:
+        state = us_state
+
+    if country:
+        country = _normalize_country(country)
+    elif us_state or _looks_us_zip(zip_code):
+        country = "USA"
+
+    if city:
+        out["VENDOR ADDRESS CITY"] = city
+    if state:
+        out["VENDOR ADDRESS STATE"] = state
+    if zip_code:
+        out["VENDOR ADDRESS ZIP CODE"] = zip_code
+    if country:
+        out["VENDOR ADDRESS COUNTRY"] = country
+
+    intl = str(out.get("INTERNATIONAL VENDOR") or "").strip().lower()
+    if country == "USA" or us_state or _looks_us_zip(zip_code):
+        out["INTERNATIONAL VENDOR"] = "No"
+    elif country and country != "USA":
+        out["INTERNATIONAL VENDOR"] = "Yes"
+    elif state and not us_state:
+        # Non-US-looking region and no USA country → international
+        out["INTERNATIONAL VENDOR"] = "Yes"
+    elif intl in ("yes", "y", "true", "1"):
+        out["INTERNATIONAL VENDOR"] = "Yes"
+    elif intl in ("no", "n", "false", "0"):
+        out["INTERNATIONAL VENDOR"] = "No"
+
 
 def normalize_offer(offer: dict[str, Any]) -> dict[str, Any]:
     """Map CONDITION / PRICE TYPE / CERTIFICATION to controlled values; leftovers → NOTES."""
     out = {k: v for k, v in offer.items() if v is not None and str(v).strip()}
     notes = str(out.get("NOTES") or "").strip()
 
-    if "PRICE TYPE" not in out:
-        for alias in list(out.keys()):
-            if alias.upper().strip() in _PRICE_TYPE_KEY_ALIASES:
-                out["PRICE TYPE"] = out.pop(alias)
-                break
+    _fold_key_alias(out, "PRICE TYPE", _PRICE_TYPE_KEY_ALIASES)
+    _fold_key_alias(out, "CONDITION", _CONDITION_KEY_ALIASES)
+    _fold_key_alias(out, "PRICE UNIT", _PRICE_UNIT_KEY_ALIASES)
+    _fold_key_alias(out, "TOTAL PRICE", _TOTAL_PRICE_KEY_ALIASES)
 
     if "CONDITION" in out:
         raw = str(out["CONDITION"]).strip()
@@ -307,6 +481,8 @@ def normalize_offer(offer: dict[str, Any]) -> dict[str, Any]:
         out["NOTES"] = notes
     elif "NOTES" in out and not str(out["NOTES"]).strip():
         del out["NOTES"]
+
+    normalize_vendor_address(out)
 
     return out
 
@@ -348,5 +524,65 @@ def fill_missing_price_types(
         item = dict(offer)
         if not str(item.get("PRICE TYPE") or "").strip():
             item["PRICE TYPE"] = filled
+        out.append(item)
+    return out
+
+
+# Known IMPEX sourcing platforms (marketplace channels — not vendor companies)
+_PLATFORM_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"\bils(?:\.com)?\b|inventory\s+locator\s+service", re.I), "ILS"),
+    (re.compile(r"\bpart\s*base\b|partbase\.com", re.I), "PartBase"),
+    (
+        re.compile(
+            r"\bnet\s*components?\b|\bnet\s*componets?\b|\bnet\s*componet\b|"
+            r"\bnetcomponents?\b|\bnetcomponet\b|netcomponents\.com",
+            re.I,
+        ),
+        "Net Components",
+    ),
+]
+
+
+def extract_platforms_from_text(source: str) -> str | None:
+    """Detect ILS / PartBase / Net Components mentions → PLATFORM string."""
+    if not source:
+        return None
+    found: list[str] = []
+    for pattern, name in _PLATFORM_PATTERNS:
+        if pattern.search(source) and name not in found:
+            found.append(name)
+    return "; ".join(found) if found else None
+
+
+def _normalize_platform_value(raw: str) -> str:
+    """Canonicalize known platform names inside an existing PLATFORM value."""
+    parts = [p.strip() for p in re.split(r"[;,|/]+", raw) if p.strip()]
+    out: list[str] = []
+    for part in parts:
+        matched = extract_platforms_from_text(part)
+        if matched:
+            for name in matched.split("; "):
+                if name not in out:
+                    out.append(name)
+        elif part not in out:
+            out.append(part)
+    return "; ".join(out)
+
+
+def fill_missing_platforms(
+    offers: list[dict[str, Any]], source_text: str
+) -> list[dict[str, Any]]:
+    """Fill or normalize PLATFORM from known marketplace names in source text."""
+    detected = extract_platforms_from_text(source_text)
+    out: list[dict[str, Any]] = []
+    for offer in offers:
+        if not isinstance(offer, dict):
+            continue
+        item = dict(offer)
+        existing = str(item.get("PLATFORM") or "").strip()
+        if existing:
+            item["PLATFORM"] = _normalize_platform_value(existing)
+        elif detected:
+            item["PLATFORM"] = detected
         out.append(item)
     return out

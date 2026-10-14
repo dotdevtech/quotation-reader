@@ -78,11 +78,17 @@ def _process_one(extraction_id: int, email_uid: str) -> None:
 
         payload = build_extraction_payload(email)
         offers = call_openai_extract(payload)
-        from .field_options import fill_missing_price_types, normalize_offers
+        from .field_options import (
+            fill_missing_platforms,
+            fill_missing_price_types,
+            normalize_offers,
+        )
 
         offers = normalize_offers(offers if isinstance(offers, list) else [])
         # Vendor PDFs often label this "Quote Type"; text may glue "OutrightLead Time"
         offers = fill_missing_price_types(offers, payload)
+        # ILS / PartBase / Net Components = PLATFORM (not vendor)
+        offers = fill_missing_platforms(offers, payload)
         result = {"offers": offers, "offer_count": len(offers)}
         db.update_extraction(extraction_id, "completed", result=result)
         db.set_email_extraction_status(email_uid, "completed", extraction_id)
@@ -146,8 +152,17 @@ def call_openai_extract(email_payload: str) -> list[dict[str, Any]]:
                 "content": (
                     "Extract vendor quotation offers from the following email + attachment text. "
                     "Return ONLY the JSON array.\n"
-                    "Reminder: if the text has 'Quote Type: Outright' (even glued like "
-                    "'Quote Type: OutrightLead Time'), set PRICE TYPE to Outright.\n\n"
+                    "Reminders:\n"
+                    "- Column 'CD' / 'Cond' = CONDITION (map to controlled list).\n"
+                    "- 'Unit Price' / 'Each' / 'Unit Each' = PRICE UNIT; "
+                    "'Total' / 'Extension' / 'Ext' = TOTAL PRICE (do not swap).\n"
+                    "- 'Quote Type: Outright' (even glued like 'OutrightLead Time') → PRICE TYPE Outright.\n"
+                    "- Put restrictions / special instructions into NOTES.\n"
+                    "- Min Line Amount = per product/line; Min PO Amount = whole order.\n"
+                    "- Split vendor CITY / STATE / ZIP / COUNTRY. If country missing but "
+                    "state is a US state (or US ZIP), set COUNTRY=USA and INTERNATIONAL VENDOR=No; "
+                    "if state is not a US state, treat as international.\n"
+                    "- ILS, PartBase, Net Components (and close spellings) = PLATFORM, not vendor.\n\n"
                     + email_payload
                 ),
             },

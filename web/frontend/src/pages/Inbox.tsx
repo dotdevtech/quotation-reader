@@ -9,6 +9,8 @@ import {
   type Offer,
   type SyncStatus,
 } from '../api'
+
+const PAGE_SIZE_OPTIONS = [50, 100, 150, 200] as const
 import OffersEditor from '../components/OffersEditor'
 import AttachmentPreviewPanel from '../components/AttachmentPreviewPanel'
 import AppNav from '../components/AppNav'
@@ -116,6 +118,7 @@ export default function Inbox() {
   const [emails, setEmails] = useState<EmailSummary[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(PAGE_SIZE)
   const [q, setQ] = useState('')
   const [qDebounced, setQDebounced] = useState('')
   const [dateFrom, setDateFrom] = useState('')
@@ -137,9 +140,9 @@ export default function Inbox() {
   const [compareOpen, setCompareOpen] = useState(false)
   const [previewTabKey, setPreviewTabKey] = useState<string>('email')
 
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
-  const rangeStart = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1
-  const rangeEnd = Math.min(page * PAGE_SIZE, total)
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
+  const rangeStart = total === 0 ? 0 : (page - 1) * pageSize + 1
+  const rangeEnd = Math.min(page * pageSize, total)
 
   const filtersActive = !!(
     qDebounced ||
@@ -172,17 +175,17 @@ export default function Inbox() {
         date_to: dateTo || undefined,
         extraction_status: statusFilter,
         forward_status: forwardFilter,
-        limit: PAGE_SIZE,
-        offset: (page - 1) * PAGE_SIZE,
+        limit: pageSize,
+        offset: (page - 1) * pageSize,
       })
       setEmails(data.items)
       setTotal(data.total)
-      const maxPage = Math.max(1, Math.ceil(data.total / PAGE_SIZE))
+      const maxPage = Math.max(1, Math.ceil(data.total / pageSize))
       if (page > maxPage) setPage(maxPage)
     } catch (e) {
       setError(String(e))
     }
-  }, [qDebounced, dateFrom, dateTo, statusFilter, forwardFilter, page])
+  }, [qDebounced, dateFrom, dateTo, statusFilter, forwardFilter, page, pageSize])
 
   const refreshSync = useCallback(async () => {
     try {
@@ -203,7 +206,7 @@ export default function Inbox() {
 
   useEffect(() => {
     setPage(1)
-  }, [qDebounced, dateFrom, dateTo, statusFilter, forwardFilter])
+  }, [qDebounced, dateFrom, dateTo, statusFilter, forwardFilter, pageSize])
 
   useEffect(() => {
     if (!sync?.running) return
@@ -241,14 +244,18 @@ export default function Inbox() {
     return () => clearInterval(t)
   }, [emails, activeUid, loadEmails])
 
-  const openEmail = async (uid: string) => {
+  const openEmail = async (uid: string, opts?: { keepCompare?: boolean }) => {
+    const keepCompare = Boolean(opts?.keepCompare)
     setActiveUid(uid)
-    setDetail(null)
-    setOffers([])
-    setExtractionId(null)
-    setExtractionStatus('none')
-    setExtractionError(null)
-    setCompareOpen(false)
+    // Keep previous Comparison content visible while loading (avoids flicker)
+    if (!keepCompare) {
+      setDetail(null)
+      setOffers([])
+      setExtractionId(null)
+      setExtractionStatus('none')
+      setExtractionError(null)
+      setCompareOpen(false)
+    }
     setPreviewTabKey('email')
     setBusy(true)
     setError('')
@@ -278,6 +285,63 @@ export default function Inbox() {
     }
   }
 
+  const activeEmailIndex = useMemo(
+    () => (activeUid ? emails.findIndex((e) => e.uid === activeUid) : -1),
+    [emails, activeUid],
+  )
+  const globalEmailIndex =
+    activeEmailIndex >= 0 ? (page - 1) * pageSize + activeEmailIndex : -1
+  const canComparePrev = globalEmailIndex > 0
+  const canCompareNext = globalEmailIndex >= 0 && globalEmailIndex < total - 1
+
+  const goCompareEmail = (uid: string | null | undefined) => {
+    if (!uid || busy) return
+    void openEmail(uid, { keepCompare: true })
+  }
+
+  /** Navigate Comparison across the full filtered list (not only this page). */
+  const goCompareByGlobalOffset = async (offset: number) => {
+    if (offset < 0 || offset >= total || busy) return
+    const localIdx = offset - (page - 1) * pageSize
+    if (localIdx >= 0 && localIdx < emails.length) {
+      goCompareEmail(emails[localIdx]?.uid)
+      return
+    }
+    setBusy(true)
+    try {
+      const data = await api.emails({
+        q: qDebounced,
+        date_from: dateFrom || undefined,
+        date_to: dateTo || undefined,
+        extraction_status: statusFilter,
+        forward_status: forwardFilter,
+        limit: 1,
+        offset,
+      })
+      const uid = data.items[0]?.uid
+      if (!uid) {
+        setBusy(false)
+        return
+      }
+      const targetPage = Math.floor(offset / pageSize) + 1
+      if (targetPage !== page) setPage(targetPage)
+      await openEmail(uid, { keepCompare: true })
+    } catch (e) {
+      setBusy(false)
+      setError(String(e))
+    }
+  }
+
+  const goComparePrev = () => {
+    if (!canComparePrev || busy) return
+    void goCompareByGlobalOffset(globalEmailIndex - 1)
+  }
+
+  const goCompareNext = () => {
+    if (!canCompareNext || busy) return
+    void goCompareByGlobalOffset(globalEmailIndex + 1)
+  }
+
   const toggle = (uid: string) => {
     setSelected((prev) => {
       const next = new Set(prev)
@@ -287,9 +351,21 @@ export default function Inbox() {
     })
   }
 
+  const pageUids = useMemo(() => emails.map((e) => e.uid), [emails])
+  const allPageSelected =
+    pageUids.length > 0 && pageUids.every((uid) => selected.has(uid))
+
+  /** Add/remove only this page’s emails — keep selections from other pages. */
   const toggleAll = () => {
-    if (selected.size === emails.length) setSelected(new Set())
-    else setSelected(new Set(emails.map((e) => e.uid)))
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (allPageSelected) {
+        for (const uid of pageUids) next.delete(uid)
+      } else {
+        for (const uid of pageUids) next.add(uid)
+      }
+      return next
+    })
   }
 
   const sendToAi = async (force = false) => {
@@ -514,19 +590,36 @@ export default function Inbox() {
                 className="w-full cursor-text bg-transparent py-2.5 text-sm outline-none placeholder:text-zinc-500"
               />
             </div>
-            <div className="mt-2 flex items-center justify-between text-xs text-zinc-500">
+            <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-zinc-500">
               <label className="flex cursor-pointer items-center gap-2">
                 <input
                   type="checkbox"
                   className="cursor-pointer"
-                  checked={selected.size === emails.length && emails.length > 0}
+                  checked={allPageSelected}
                   onChange={toggleAll}
                 />
                 Select all on this page
               </label>
-              <span>
-                {selected.size} selected · {rangeStart}–{rangeEnd} of {total}
-              </span>
+              <div className="flex items-center gap-2">
+                <label className="flex items-center gap-1.5 text-zinc-400">
+                  Per page
+                  <select
+                    value={pageSize}
+                    onChange={(e) => setPageSize(Number(e.target.value))}
+                    className="cursor-pointer rounded border border-[#444] bg-[#111] px-1.5 py-1 text-xs text-white"
+                    title="How many emails to show on each page"
+                  >
+                    {PAGE_SIZE_OPTIONS.map((n) => (
+                      <option key={n} value={n}>
+                        {n}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <span>
+                  {selected.size} selected · {rangeStart}–{rangeEnd} of {total}
+                </span>
+              </div>
             </div>
           </div>
 
@@ -800,12 +893,37 @@ export default function Inbox() {
         <div className="fixed inset-0 z-50 flex flex-col bg-[#0f0f0f]/90 backdrop-blur-sm">
           <div className="flex items-center gap-3 border-b border-[#333] bg-[#1a1a1a] px-4 py-3">
             <div className="text-sm font-semibold text-white">Comparison</div>
-            <div className="truncate text-xs text-zinc-400">{detail.subject}</div>
+            <div className="min-w-0 flex-1 truncate text-xs text-zinc-400">
+              {busy ? 'Loading email…' : detail.subject}
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <button
+                type="button"
+                disabled={!canComparePrev || busy}
+                onClick={goComparePrev}
+                className="cursor-pointer rounded-md bg-sky-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-40"
+                title="Previous email (all filtered emails)"
+              >
+                ← Prev
+              </button>
+              <span className="min-w-[4.5rem] text-center text-xs font-medium text-zinc-300">
+                {globalEmailIndex >= 0 ? globalEmailIndex + 1 : '—'} / {total}
+              </span>
+              <button
+                type="button"
+                disabled={!canCompareNext || busy}
+                onClick={goCompareNext}
+                className="cursor-pointer rounded-md bg-sky-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-40"
+                title="Next email (all filtered emails)"
+              >
+                Next →
+              </button>
+            </div>
             <button
               type="button"
-              disabled={extractionStatus !== 'completed' || !activeUid || sendingSheet}
+              disabled={extractionStatus !== 'completed' || !activeUid || sendingSheet || busy}
               onClick={() => activeUid && sendToSheet([activeUid])}
-              className="ml-auto cursor-pointer rounded bg-violet-700 px-2.5 py-1 text-[11px] text-white hover:bg-violet-600 disabled:cursor-not-allowed disabled:opacity-40"
+              className="cursor-pointer rounded bg-violet-700 px-2.5 py-1 text-[11px] text-white hover:bg-violet-600 disabled:cursor-not-allowed disabled:opacity-40"
             >
               {sendingSheet
                 ? 'Sending…'
@@ -822,10 +940,36 @@ export default function Inbox() {
               Close
             </button>
           </div>
-          <div className="grid min-h-0 flex-1 grid-cols-1 md:grid-cols-2">
+          <div className="relative grid min-h-0 flex-1 grid-cols-1 md:grid-cols-2">
+            {busy && (
+              <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-black/50 backdrop-blur-[2px]">
+                <span className="inline-block h-9 w-9 animate-spin rounded-full border-[3px] border-white border-t-transparent" />
+                <div className="rounded-md bg-[#1a1a1a] px-4 py-2 text-sm font-medium text-white shadow-lg">
+                  Loading next email…
+                </div>
+              </div>
+            )}
             <div className="flex min-h-0 flex-col border-r border-[#333] bg-white text-zinc-900">
-              <div className="border-b border-zinc-200 px-4 py-2 text-xs font-semibold uppercase text-zinc-600">
-                Preview (email + PDF / Excel / Word)
+              <div className="flex items-center gap-2 border-b border-zinc-200 bg-zinc-50 px-4 py-2.5">
+                <div className="min-w-0 flex-1 text-xs font-semibold uppercase text-zinc-600">
+                  Preview (email + PDF / Excel / Word)
+                </div>
+                <button
+                  type="button"
+                  disabled={!canComparePrev || busy}
+                  onClick={goComparePrev}
+                  className="cursor-pointer rounded-md bg-sky-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  ← Prev mail
+                </button>
+                <button
+                  type="button"
+                  disabled={!canCompareNext || busy}
+                  onClick={goCompareNext}
+                  className="cursor-pointer rounded-md bg-sky-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Next mail →
+                </button>
               </div>
               <AttachmentPreviewPanel
                 detail={detail}
