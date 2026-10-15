@@ -152,6 +152,19 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(body),
     }),
+  /** Wipe local inbox cache. confirm must be the string "DELETE". */
+  clearInbox: (confirm: string) =>
+    request<{
+      ok: boolean
+      message: string
+      emails_deleted: number
+      extractions_deleted: number
+      jobs_deleted: number
+      attachment_folders_deleted: number
+    }>('/api/inbox/clear', {
+      method: 'POST',
+      body: JSON.stringify({ confirm }),
+    }),
   sync: (opts?: { mode?: 'all' | 'range' | 'new'; date_from?: string; date_to?: string }) =>
     request<{ ok: boolean; error?: string }>('/api/sync', {
       method: 'POST',
@@ -187,6 +200,8 @@ export const api = {
     date_to?: string
     extraction_status?: string
     forward_status?: string
+    /** email = untouched; scanned = scanned not sent; sent = sent to sheet */
+    folder?: 'email' | 'scanned' | 'sent'
     limit?: number
     offset?: number
   }) => {
@@ -194,11 +209,15 @@ export const api = {
     if (params.q) sp.set('q', params.q)
     if (params.date_from) sp.set('date_from', params.date_from)
     if (params.date_to) sp.set('date_to', params.date_to)
-    if (params.extraction_status && params.extraction_status !== 'all') {
-      sp.set('extraction_status', params.extraction_status)
-    }
-    if (params.forward_status && params.forward_status !== 'all') {
-      sp.set('forward_status', params.forward_status)
+    if (params.folder) {
+      sp.set('folder', params.folder)
+    } else {
+      if (params.extraction_status && params.extraction_status !== 'all') {
+        sp.set('extraction_status', params.extraction_status)
+      }
+      if (params.forward_status && params.forward_status !== 'all') {
+        sp.set('forward_status', params.forward_status)
+      }
     }
     sp.set('limit', String(params.limit ?? PAGE_SIZE))
     sp.set('offset', String(params.offset ?? 0))
@@ -226,6 +245,7 @@ export const api = {
       fields: string[]
       condition_options?: string[]
       price_type_options?: string[]
+      currency_options?: string[]
       certification_options?: string[]
     }>('/api/meta/fields'),
   jobs: () => request<{ items: Job[] }>('/api/jobs'),

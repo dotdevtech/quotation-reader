@@ -12,6 +12,7 @@ import httpx
 
 from . import db
 from .config import BACKEND_ROOT
+from .field_options import match_currency
 from .settings_store import get_app_settings
 
 EXPORT_DIR = BACKEND_ROOT / "exports"
@@ -86,6 +87,55 @@ def _is_package(offer: dict[str, Any]) -> bool:
     return pkg.lower() not in ("no", "false", "0", "n")
 
 
+def _parse_money_number(raw: str) -> Optional[float]:
+    """Parse a money/qty string to float; return None if not a clear number."""
+    t = (raw or "").strip()
+    if not t:
+        return None
+    # Keep digits, dots, commas, minus; drop currency symbols/letters
+    cleaned = re.sub(r"[^\d,.\-]", "", t)
+    if not cleaned or cleaned in ("-", ".", ",", "-.", "-,"):
+        return None
+    # European-style 1.234,56 → 1234.56; US 1,234.56 → 1234.56
+    if "," in cleaned and "." in cleaned:
+        if cleaned.rfind(",") > cleaned.rfind("."):
+            cleaned = cleaned.replace(".", "").replace(",", ".")
+        else:
+            cleaned = cleaned.replace(",", "")
+    elif "," in cleaned:
+        parts = cleaned.split(",")
+        if len(parts) == 2 and len(parts[1]) <= 2:
+            cleaned = cleaned.replace(",", ".")
+        else:
+            cleaned = cleaned.replace(",", "")
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
+def _format_money_number(n: float) -> str:
+    if abs(n - round(n)) < 1e-9:
+        return str(int(round(n)))
+    text = f"{n:.4f}".rstrip("0").rstrip(".")
+    return text
+
+
+def _total_price_for_sheet(offer: dict[str, Any]) -> str:
+    """Prefer extracted TOTAL PRICE; else qty × unit when both are clear numbers."""
+    total = _s(offer, "TOTAL PRICE")
+    if total:
+        return total
+    price_type = _s(offer, "PRICE TYPE").lower()
+    if price_type == "no quote":
+        return ""
+    qty = _parse_money_number(_s(offer, "QUANTITY OFFERED"))
+    unit = _parse_money_number(_s(offer, "PRICE UNIT"))
+    if qty is None or unit is None:
+        return ""
+    return _format_money_number(qty * unit)
+
+
 def offer_to_part(offer: dict[str, Any]) -> dict[str, Any]:
     part: dict[str, Any] = {
         "partNum": _s(offer, "PART NUMBER"),
@@ -96,9 +146,10 @@ def offer_to_part(offer: dict[str, Any]) -> dict[str, Any]:
         "qtyOffered": _s(offer, "QUANTITY OFFERED"),
         "uom": _s(offer, "UOM") or "EA",
         "isPackage": _is_package(offer),
-        "currency": _s(offer, "CURRENCY") or "USD",
+        "currency": match_currency(_s(offer, "CURRENCY")) or "USD",
         "qtyRequired": _s(offer, "QUANTITY REQUIRED"),
         "priceUnit": _s(offer, "PRICE UNIT"),
+        "totalPrice": _total_price_for_sheet(offer),
         "deliveryLead": _s(offer, "DELIVERY LEAD"),
         "priceType": _s(offer, "PRICE TYPE"),
         "trace": _s(offer, "TRACE"),
@@ -134,7 +185,11 @@ def build_webhook_payload(
     notes = "; ".join(dict.fromkeys(notes_bits))
 
     parts = [offer_to_part(o) for o in offers]
-    parts = [p for p in parts if p.get("partNum") or p.get("description") or p.get("priceUnit")]
+    parts = [
+        p
+        for p in parts
+        if p.get("partNum") or p.get("description") or p.get("priceUnit") or p.get("totalPrice")
+    ]
 
     return {
         "token": token,

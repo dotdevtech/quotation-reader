@@ -3,14 +3,21 @@ import { Link } from 'react-router-dom'
 import { api, type Health, type SyncStatus } from '../api'
 import AppNav from '../components/AppNav'
 
+function localISODate(d = new Date()) {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
 function todayISO() {
-  return new Date().toISOString().slice(0, 10)
+  return localISODate()
 }
 
 function daysAgoISO(days: number) {
   const d = new Date()
   d.setDate(d.getDate() - days)
-  return d.toISOString().slice(0, 10)
+  return localISODate(d)
 }
 
 const MIN_AUTO_MINUTES = 10
@@ -139,11 +146,11 @@ export default function Sync() {
         }
       />
 
-      <div className="min-h-0 flex-1 overflow-y-auto bg-[#141414] px-4 py-6">
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-6">
         <div className="mx-auto max-w-3xl space-y-6">
           <div>
-            <h1 className="text-xl font-semibold text-white">Sync Data</h1>
-            <p className="mt-1 text-sm text-zinc-400">
+            <h1 className="text-xl font-semibold text-rose-900">Sync Data</h1>
+            <p className="mt-1 text-sm text-slate-500">
               Pull emails from IMAP into the local cache. One Sync click = one job. Long date ranges
               are searched month-by-month inside that job (normal for Bluehost). Do not open emails
               until sync finishes.
@@ -151,102 +158,104 @@ export default function Sync() {
           </div>
 
           {(error || msg) && (
-            <div className="rounded-lg border border-[#333] bg-[#1a1a1a] px-4 py-3 text-sm">
-              {error && <div className="text-red-400">{error}</div>}
-              {msg && <div className="text-emerald-400">{msg}</div>}
+            <div className="rounded-lg border border-slate-200 bg-white/90 px-4 py-3 text-sm">
+              {error && <div className="text-red-600">{error}</div>}
+              {msg && <div className="text-emerald-700">{msg}</div>}
             </div>
           )}
 
           {sync && (
-            <div className="rounded-lg border border-[#333] bg-[#1a1a1a] px-4 py-3 text-sm text-zinc-300">
+            <div className="rounded-lg border border-slate-200 bg-white/90 px-4 py-3 text-sm text-slate-600">
               {running ? (
                 <div>
-                  <span className="font-medium text-amber-300">Syncing…</span> {sync.message}{' '}
+                  <span className="font-medium text-amber-700">Syncing…</span> {sync.message}{' '}
                   ({sync.done}/{sync.total})
                 </div>
               ) : sync.phase === 'error' ? (
-                <div className="text-red-400">
+                <div className="text-red-600">
                   Last sync error: {sync.error || sync.message}
                 </div>
               ) : sync.last_sync_at ? (
                 <div>
-                  Last sync <span className="text-white">{sync.last_sync_at}</span> ·{' '}
+                  Last sync <span className="text-slate-900">{sync.last_sync_at}</span> ·{' '}
                   {sync.last_sync_count || 0} messages
                 </div>
               ) : (
-                <div className="text-zinc-500">Not synced yet</div>
+                <div className="text-slate-500">Not synced yet</div>
               )}
             </div>
           )}
 
           {!health?.imap_configured && (
-            <div className="rounded-lg border border-amber-800/50 bg-amber-950/30 px-4 py-3 text-sm text-amber-300">
+            <div className="rounded-lg border border-amber-800/50 bg-amber-950/30 px-4 py-3 text-sm text-amber-700">
               IMAP is not configured.{' '}
-              <Link to="/settings" className="cursor-pointer underline hover:text-amber-200">
+              <Link to="/settings" className="cursor-pointer font-medium text-red-700 underline hover:text-red-600">
                 Open Settings
               </Link>
             </div>
           )}
 
           {/* Full sync */}
-          <section className="rounded-xl border border-[#333] bg-[#1a1a1a] p-5">
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-400">
+          <section className="rounded-xl border border-rose-200 bg-gradient-to-br from-white to-rose-50/90 p-5 shadow-sm">
+            <h2 className="text-sm font-semibold uppercase tracking-wide text-rose-800">
               1 · Whole mailbox
             </h2>
-            <p className="mt-2 text-sm text-zinc-400">
+            <p className="mt-2 text-sm text-slate-500">
               Download headers for the full mailbox history (long range — may take several minutes).
             </p>
             <button
               type="button"
               disabled={running || !health?.imap_configured}
               onClick={() => runSync('all')}
-              className="mt-4 cursor-pointer rounded-md bg-red-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-50"
+              className="mt-4 cursor-pointer rounded-md bg-red-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-red-600 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {running ? 'Syncing…' : 'Sync whole mailbox'}
             </button>
           </section>
 
           {/* Date range */}
-          <section className="rounded-xl border border-[#333] bg-[#1a1a1a] p-5">
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-400">
+          <section className="rounded-xl border border-sky-200 bg-gradient-to-br from-white to-sky-50/90 p-5 shadow-sm">
+            <h2 className="text-sm font-semibold uppercase tracking-wide text-sky-800">
               2 · Date range
             </h2>
-            <p className="mt-2 text-sm text-zinc-400">
+            <p className="mt-2 text-sm text-slate-500">
               Sync only emails between the dates you choose.
             </p>
             <div className="mt-4 flex flex-wrap items-end gap-3">
-              <label className="text-xs text-zinc-400">
+              <label className="text-xs text-slate-500">
                 From
                 <input
                   type="date"
                   value={dateFrom}
                   onChange={(e) => setDateFrom(e.target.value)}
-                  className="mt-1 block cursor-pointer rounded-md border border-[#444] bg-[#111] px-2 py-1.5 text-sm text-white"
+                  className="mt-1 block cursor-pointer rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm text-slate-900"
                 />
               </label>
-              <label className="text-xs text-zinc-400">
+              <label className="text-xs text-slate-500">
                 To
                 <input
                   type="date"
                   value={dateTo}
                   onChange={(e) => setDateTo(e.target.value)}
-                  className="mt-1 block cursor-pointer rounded-md border border-[#444] bg-[#111] px-2 py-1.5 text-sm text-white"
+                  className="mt-1 block cursor-pointer rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm text-slate-900"
                 />
               </label>
-              <div className="flex flex-wrap gap-1 rounded-lg bg-[#111] p-1">
-                {[
-                  ['30d', 30],
-                  ['3mo', 90],
-                  ['9mo', 270],
-                ].map(([label, days]) => (
+              <div className="flex flex-wrap gap-1 rounded-lg bg-white p-1">
+                {(
+                  [
+                    ['30d', 30, 'bg-sky-600 hover:bg-sky-500 text-white'],
+                    ['3mo', 90, 'bg-violet-600 hover:bg-violet-500 text-white'],
+                    ['9mo', 270, 'bg-orange-600 hover:bg-orange-500 text-white'],
+                  ] as const
+                ).map(([label, days, cls]) => (
                   <button
-                    key={String(label)}
+                    key={label}
                     type="button"
                     onClick={() => {
-                      setDateFrom(daysAgoISO(Number(days)))
+                      setDateFrom(daysAgoISO(days))
                       setDateTo(todayISO())
                     }}
-                    className="cursor-pointer rounded-md px-3 py-1.5 text-xs font-medium text-zinc-300 hover:bg-[#2a2a2a] hover:text-white"
+                    className={`cursor-pointer rounded-md px-3 py-1.5 text-xs font-semibold shadow-sm ${cls}`}
                   >
                     {label}
                   </button>
@@ -257,18 +266,18 @@ export default function Sync() {
               type="button"
               disabled={running || !health?.imap_configured}
               onClick={() => runSync('range')}
-              className="mt-4 cursor-pointer rounded-md bg-zinc-100 px-4 py-2.5 text-sm font-medium text-zinc-900 hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
+              className="mt-4 cursor-pointer rounded-md bg-slate-100 px-4 py-2.5 text-sm font-medium text-slate-900 hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
             >
               {running ? 'Syncing…' : 'Sync date range'}
             </button>
           </section>
 
           {/* New + auto timer */}
-          <section className="rounded-xl border border-[#333] bg-[#1a1a1a] p-5">
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-400">
+          <section className="rounded-xl border border-emerald-200 bg-gradient-to-br from-white to-emerald-50/80 p-5 shadow-sm">
+            <h2 className="text-sm font-semibold uppercase tracking-wide text-emerald-800">
               3 · New emails &amp; auto-sync timer
             </h2>
-            <p className="mt-2 text-sm text-zinc-400">
+            <p className="mt-2 text-sm text-slate-500">
               Pull only newer mail (since last sync). Turn on the timer to repeat automatically —
               minimum interval is {MIN_AUTO_MINUTES} minutes.
             </p>
@@ -277,16 +286,16 @@ export default function Sync() {
               type="button"
               disabled={running || !health?.imap_configured}
               onClick={() => runSync('new')}
-              className="mt-4 cursor-pointer rounded-md bg-[#333] px-4 py-2.5 text-sm font-medium text-white hover:bg-[#444] disabled:cursor-not-allowed disabled:opacity-50"
+              className="mt-4 cursor-pointer rounded-md bg-slate-200 px-4 py-2.5 text-sm font-medium text-slate-900 hover:bg-slate-300 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {running ? 'Syncing…' : 'Sync new emails now'}
             </button>
 
-            <div className="mt-6 border-t border-[#2a2a2a] pt-5">
+            <div className="mt-6 border-t border-slate-200 pt-5">
               <label className="flex cursor-pointer items-center gap-3">
                 <input
                   type="checkbox"
-                  className="h-4 w-4 cursor-pointer accent-red-600"
+                  className="h-4 w-4 cursor-pointer accent-red-700"
                   checked={autoEnabled}
                   disabled={savingAuto || !health?.imap_configured}
                   onChange={(e) => {
@@ -295,11 +304,11 @@ export default function Sync() {
                     saveAuto(on, autoMinutes)
                   }}
                 />
-                <span className="text-sm font-medium text-white">Enable auto-sync timer</span>
+                <span className="text-sm font-medium text-slate-900">Enable auto-sync timer</span>
               </label>
 
               <div className="mt-4 flex flex-wrap items-end gap-3">
-                <label className="text-xs text-zinc-400">
+                <label className="text-xs text-slate-500">
                   Interval (minutes)
                   <input
                     type="number"
@@ -312,26 +321,26 @@ export default function Sync() {
                         Math.max(MIN_AUTO_MINUTES, Number(e.target.value) || MIN_AUTO_MINUTES),
                       )
                     }
-                    className="mt-1 block w-28 cursor-pointer rounded-md border border-[#444] bg-[#111] px-2 py-1.5 text-sm text-white disabled:opacity-40"
+                    className="mt-1 block w-28 cursor-pointer rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm text-slate-900 disabled:opacity-40"
                   />
                 </label>
                 <button
                   type="button"
                   disabled={!autoEnabled || savingAuto || !health?.imap_configured}
                   onClick={() => saveAuto(true, autoMinutes)}
-                  className="cursor-pointer rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="cursor-pointer rounded-md bg-red-700 px-4 py-2 text-sm font-semibold text-white hover:bg-red-600 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {savingAuto ? 'Saving…' : 'Save interval'}
                 </button>
               </div>
 
               {autoEnabled && (
-                <p className="mt-3 text-xs text-zinc-500">
+                <p className="mt-3 text-xs text-slate-500">
                   Auto-sync runs in the background even if this tab is closed.
                   {nextRunAt ? (
                     <>
                       {' '}
-                      Next run around <span className="text-zinc-300">{nextRunAt}</span>.
+                      Next run around <span className="text-slate-600">{nextRunAt}</span>.
                     </>
                   ) : null}
                 </p>

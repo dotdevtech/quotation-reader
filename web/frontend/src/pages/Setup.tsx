@@ -39,41 +39,41 @@ export default function Setup() {
   }
 
   return (
-    <div className="flex h-full items-center justify-center bg-[#121212] px-4">
+    <div className="flex h-full items-center justify-center bg-transparent px-4">
       <form
         onSubmit={onSubmit}
-        className="w-full max-w-sm rounded-xl border border-[#333] bg-[#1e1e1e] p-8 shadow-xl"
+        className="w-full max-w-sm rounded-xl border border-slate-200 bg-white p-8 shadow-xl"
       >
-        <h1 className="text-xl font-semibold text-white">Create login password</h1>
-        <p className="mt-1 text-sm text-zinc-400">
+        <h1 className="text-xl font-semibold text-slate-900">Create login password</h1>
+        <p className="mt-1 text-sm text-slate-500">
           This password protects your Quotation Reader panel on this PC.
         </p>
 
-        <label className="mt-6 block text-xs text-zinc-400">
+        <label className="mt-6 block text-xs text-slate-500">
           New password
           <input
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            className="mt-1 w-full rounded border border-[#444] bg-[#111] px-3 py-2.5 text-sm text-white outline-none focus:border-red-500"
+            className="mt-1 w-full rounded border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-red-500"
           />
         </label>
-        <label className="mt-4 block text-xs text-zinc-400">
+        <label className="mt-4 block text-xs text-slate-500">
           Confirm password
           <input
             type="password"
             value={confirm}
             onChange={(e) => setConfirm(e.target.value)}
-            className="mt-1 w-full rounded border border-[#444] bg-[#111] px-3 py-2.5 text-sm text-white outline-none focus:border-red-500"
+            className="mt-1 w-full rounded border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-red-500"
           />
         </label>
 
-        {error && <div className="mt-3 text-sm text-red-400">{error}</div>}
+        {error && <div className="mt-3 text-sm text-red-600">{error}</div>}
 
         <button
           type="submit"
           disabled={busy}
-          className="mt-6 w-full cursor-pointer rounded bg-red-600 py-2.5 text-sm font-medium text-white hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-50"
+          className="mt-6 w-full cursor-pointer rounded-lg bg-red-700 py-2.5 text-sm font-semibold text-white hover:bg-red-600 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {busy ? 'Saving…' : 'Create & continue'}
         </button>

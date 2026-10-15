@@ -40,13 +40,13 @@ const SHARED_FIELDS_REST = SHARED_FIELDS.filter(
 /** Distinct colors per part tab (cycles if more parts than colors). */
 const PART_TAB_COLORS = [
   { active: 'border-2 border-b-0 border-sky-600 bg-sky-100 text-sky-950 shadow-sm', idle: 'border-2 border-sky-400 bg-sky-50 text-sky-800 hover:bg-sky-100' },
-  { active: 'border-2 border-b-0 border-violet-600 bg-violet-100 text-violet-950 shadow-sm', idle: 'border-2 border-violet-400 bg-violet-50 text-violet-800 hover:bg-violet-100' },
+  { active: 'border-2 border-b-0 border-cyan-600 bg-cyan-100 text-cyan-950 shadow-sm', idle: 'border-2 border-cyan-400 bg-cyan-50 text-cyan-800 hover:bg-cyan-100' },
   { active: 'border-2 border-b-0 border-amber-600 bg-amber-100 text-amber-950 shadow-sm', idle: 'border-2 border-amber-400 bg-amber-50 text-amber-900 hover:bg-amber-100' },
   { active: 'border-2 border-b-0 border-emerald-600 bg-emerald-100 text-emerald-950 shadow-sm', idle: 'border-2 border-emerald-400 bg-emerald-50 text-emerald-800 hover:bg-emerald-100' },
   { active: 'border-2 border-b-0 border-rose-600 bg-rose-100 text-rose-950 shadow-sm', idle: 'border-2 border-rose-400 bg-rose-50 text-rose-800 hover:bg-rose-100' },
   { active: 'border-2 border-b-0 border-orange-600 bg-orange-100 text-orange-950 shadow-sm', idle: 'border-2 border-orange-400 bg-orange-50 text-orange-900 hover:bg-orange-100' },
   { active: 'border-2 border-b-0 border-teal-600 bg-teal-100 text-teal-950 shadow-sm', idle: 'border-2 border-teal-400 bg-teal-50 text-teal-800 hover:bg-teal-100' },
-  { active: 'border-2 border-b-0 border-fuchsia-600 bg-fuchsia-100 text-fuchsia-950 shadow-sm', idle: 'border-2 border-fuchsia-400 bg-fuchsia-50 text-fuchsia-800 hover:bg-fuchsia-100' },
+  { active: 'border-2 border-b-0 border-lime-600 bg-lime-100 text-lime-950 shadow-sm', idle: 'border-2 border-lime-400 bg-lime-50 text-lime-800 hover:bg-lime-100' },
 ] as const
 
 /** Changes per part line inside one email. */
@@ -95,6 +95,8 @@ const DEFAULT_PRICE_TYPE = [
   'No quote',
 ]
 
+const DEFAULT_CURRENCY = ['USD', 'EUR', 'CAD', 'GBP', 'YEN', 'PKR', 'AED', 'OTHER']
+
 const DEFAULT_CERTS = [
   'FAA 8130',
   'EASA Form 1',
@@ -108,22 +110,22 @@ const DEFAULT_CERTS = [
 ]
 
 const inputClass =
-  'w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-center text-base text-zinc-900 outline-none ring-red-500/30 focus:border-red-500 focus:ring-2'
+  'box-border w-full max-w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-center text-base text-slate-900 outline-none ring-red-500/30 focus:border-red-500 focus:ring-2'
 
 /** Filled fields: tinted background, bold, larger, centered. */
 const filledInputClass =
-  'w-full rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2.5 text-center text-xl font-bold text-zinc-900 outline-none ring-emerald-500/30 focus:border-emerald-500 focus:ring-2'
+  'box-border w-full max-w-full rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2.5 text-center text-xl font-bold text-emerald-950 outline-none ring-emerald-500/30 focus:border-emerald-500 focus:ring-2'
 
 function fieldInputClass(value: string, readOnly = false) {
   const has = Boolean(value.trim()) && value.trim() !== '—'
-  if (readOnly && has) return `${filledInputClass} bg-emerald-50/80 text-zinc-800`
-  if (readOnly) return `${inputClass} bg-zinc-100 text-zinc-600`
+  if (readOnly && has) return `${filledInputClass} bg-emerald-50/80 text-slate-800`
+  if (readOnly) return `${inputClass} bg-slate-100 text-slate-600`
   return has ? filledInputClass : inputClass
 }
 
 /** Labels: strong color so they are easy to spot (separate from filled values). */
 const labelClass =
-  'mb-1.5 block text-center rounded bg-indigo-100 px-2 py-0.5 text-xs font-bold uppercase tracking-wide text-indigo-900'
+  'mb-1.5 block text-center rounded bg-sky-100 px-2 py-0.5 text-xs font-bold uppercase tracking-wide text-sky-900'
 
 const heroLabelClass =
   'mb-1 block text-center rounded bg-amber-200 px-2 py-0.5 text-xs font-bold uppercase tracking-wide text-amber-950'
@@ -131,8 +133,8 @@ const heroLabelClass =
 function heroInputClass(value: string) {
   const has = Boolean(value.trim())
   return has
-    ? 'w-full rounded-md border-2 border-amber-400 bg-amber-50 px-3 py-2.5 text-center text-xl font-bold text-zinc-900 outline-none ring-amber-500/30 focus:border-amber-500 focus:ring-2'
-    : 'w-full rounded-md border-2 border-dashed border-amber-300 bg-white px-3 py-2.5 text-center text-lg text-zinc-400 outline-none focus:border-amber-500 focus:ring-2'
+    ? 'box-border w-full max-w-full rounded-md border-2 border-amber-400 bg-amber-50 px-3 py-2.5 text-center text-xl font-bold text-amber-950 outline-none ring-amber-500/30 focus:border-amber-500 focus:ring-2'
+    : 'box-border w-full max-w-full rounded-md border-2 border-dashed border-amber-300 bg-white px-3 py-2.5 text-center text-lg text-slate-500 outline-none focus:border-amber-500 focus:ring-2'
 }
 
 function parseCerts(value: unknown): string[] {
@@ -189,6 +191,7 @@ export default function OffersEditor({
 }: Props) {
   const [conditionOpts, setConditionOpts] = useState(DEFAULT_CONDITION)
   const [priceTypeOpts, setPriceTypeOpts] = useState(DEFAULT_PRICE_TYPE)
+  const [currencyOpts, setCurrencyOpts] = useState(DEFAULT_CURRENCY)
   const [certOpts, setCertOpts] = useState(DEFAULT_CERTS)
   const [draft, setDraft] = useState<Offer[]>(offers)
   const [shared, setShared] = useState<Offer>({})
@@ -210,6 +213,7 @@ export default function OffersEditor({
       .then((r) => {
         if (r.condition_options?.length) setConditionOpts(r.condition_options)
         if (r.price_type_options?.length) setPriceTypeOpts(r.price_type_options)
+        if (r.currency_options?.length) setCurrencyOpts(r.currency_options)
         if (r.certification_options?.length) setCertOpts(r.certification_options)
       })
       .catch(() => undefined)
@@ -362,6 +366,23 @@ export default function OffersEditor({
         </select>
       )
     }
+    if (key === 'CURRENCY') {
+      const known = !value || currencyOpts.includes(value)
+      return (
+        <select
+          value={known ? value : ''}
+          onChange={(e) => onChange(e.target.value)}
+          className={cls}
+        >
+          <option value="">— Select —</option>
+          {currencyOpts.map((o) => (
+            <option key={o} value={o}>
+              {o}
+            </option>
+          ))}
+        </select>
+      )
+    }
     if (key === 'CERTIFICATION DOCUMENTS') {
       const hasAny = selectedCerts.size > 0
       return (
@@ -375,10 +396,10 @@ export default function OffersEditor({
             return (
               <label
                 key={opt}
-                className={`flex cursor-pointer items-center gap-2 rounded-md border px-2.5 py-1.5 hover:bg-zinc-50 ${
+                className={`flex cursor-pointer items-center gap-2 rounded-md border px-2.5 py-1.5 hover:bg-slate-50 ${
                   on
-                    ? 'border-emerald-400 bg-emerald-100 text-center text-xl font-bold text-zinc-900'
-                    : 'border-zinc-200 bg-white text-center text-base text-zinc-800'
+                    ? 'border-emerald-400 bg-emerald-100 text-center text-xl font-bold text-emerald-950'
+                    : 'border-slate-200 bg-white text-center text-base text-slate-800'
                 }`}
               >
                 <input
@@ -458,18 +479,20 @@ export default function OffersEditor({
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-[#f7f7f8] text-zinc-900">
-      <div className="flex items-center gap-2 border-b border-zinc-200 bg-white px-3 py-2">
-        <div className="text-sm font-semibold text-zinc-900">Quotation data</div>
+    <div className="flex h-full min-h-0 min-w-0 max-w-full flex-col overflow-hidden bg-slate-50 text-slate-900">
+      <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 bg-white px-3 py-2">
+        <div className="text-sm font-semibold text-slate-900">Quotation data</div>
         {status && (
-          <span className="rounded bg-zinc-200 px-2 py-0.5 text-[11px] text-zinc-700">{status}</span>
+          <span className="rounded bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-900">
+            {status}
+          </span>
         )}
-        <div className="ml-auto flex gap-2">
+        <div className="ml-auto flex flex-wrap gap-2">
           <button
             type="button"
             onClick={addOffer}
             disabled={!extractionId}
-            className="cursor-pointer rounded bg-zinc-200 px-2 py-1 text-xs text-zinc-800 hover:bg-zinc-300 disabled:opacity-40"
+            className="cursor-pointer rounded bg-slate-800 px-2 py-1 text-xs text-white hover:bg-slate-700 disabled:opacity-40"
           >
             + Part
           </button>
@@ -477,7 +500,7 @@ export default function OffersEditor({
             type="button"
             onClick={removeOffer}
             disabled={!extractionId || typeof panel !== 'number'}
-            className="cursor-pointer rounded bg-zinc-200 px-2 py-1 text-xs text-zinc-800 hover:bg-zinc-300 disabled:opacity-40"
+            className="cursor-pointer rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-40"
           >
             Remove part
           </button>
@@ -493,7 +516,7 @@ export default function OffersEditor({
       </div>
 
       {(error || err || msg) && (
-        <div className="border-b border-zinc-200 px-3 py-2 text-xs">
+        <div className="border-b border-slate-200 px-3 py-2 text-xs">
           {error && <div className="text-red-600">{error}</div>}
           {err && <div className="text-red-600">{err}</div>}
           {msg && <div className="text-emerald-700">{msg}</div>}
@@ -501,14 +524,14 @@ export default function OffersEditor({
       )}
 
       {extractionId && (
-        <div className="flex gap-1 overflow-x-auto border-b border-zinc-200 bg-white px-3 pt-2">
+        <div className="flex gap-1 overflow-x-auto border-b border-slate-200 bg-white px-3 pt-2">
           <button
             type="button"
             onClick={() => setPanel('quote')}
             className={`cursor-pointer rounded-t px-3 py-2 text-xs font-semibold ${
               panel === 'quote'
-                ? 'border border-b-0 border-zinc-200 bg-[#f7f7f8] text-red-700'
-                : 'text-zinc-600 hover:bg-zinc-100 hover:text-zinc-900'
+                ? 'border border-b-0 border-slate-200 bg-slate-50 text-red-800'
+                : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
             }`}
           >
             Quote data
@@ -535,11 +558,10 @@ export default function OffersEditor({
         </div>
       )}
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-3">
+      <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-3">
         {!extractionId && (
-          <div className="text-sm text-zinc-600">
-            Select emails and click “Send selected to OpenAI”. Results appear here to review and
-            correct.
+          <div className="text-sm text-slate-600">
+            Select emails and click “Scan”. Results appear here to review and correct.
           </div>
         )}
         {extractionId && panel === 'quote' && (
@@ -597,8 +619,8 @@ export default function OffersEditor({
               </div>
             </div>
 
-            <div className="rounded-lg border border-zinc-200 bg-white p-3">
-              <p className="mb-3 text-[11px] text-zinc-500">
+            <div className="rounded-lg border border-slate-200 bg-white p-3">
+              <p className="mb-3 text-[11px] text-slate-500">
                 Quote date, references, terms, and other vendor details.
               </p>
               <div className="grid gap-3 sm:grid-cols-2">
@@ -626,8 +648,8 @@ export default function OffersEditor({
           </div>
         )}
         {extractionId && typeof panel === 'number' && (
-          <div className="rounded-lg border border-zinc-200 bg-white p-3">
-            <p className="mb-3 text-[11px] text-zinc-500">
+          <div className="rounded-lg border border-slate-200 bg-white p-3">
+            <p className="mb-3 text-[11px] text-slate-500">
               Part line {panel + 1} — part number, qty, price, delivery, certs, and other line-level
               fields.
             </p>
@@ -668,19 +690,19 @@ export default function OffersEditor({
                     {partField('NSN')}
                   </div>
                   {/* 4. Qty offered + Qty required + UOM */}
-                  <div className="grid gap-3 sm:grid-cols-3">
+                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                     {partField('QUANTITY OFFERED')}
                     {partField('QUANTITY REQUIRED')}
                     {partField('UOM')}
                   </div>
                   {/* 5. Currency + Price each + Total */}
-                  <div className="grid gap-3 sm:grid-cols-3">
+                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                     {partField('CURRENCY')}
                     {partField('PRICE UNIT')}
                     {partField('TOTAL PRICE')}
                   </div>
                   {/* 6. Price type + Delivery + Trace */}
-                  <div className="grid gap-3 sm:grid-cols-3">
+                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                     {partField('PRICE TYPE')}
                     {partField('DELIVERY LEAD')}
                     {partField('TRACE')}
@@ -688,7 +710,7 @@ export default function OffersEditor({
                   {/* 7. Certificates */}
                   {partField('CERTIFICATION DOCUMENTS')}
                   {/* 8. Package + Package qty + Package type */}
-                  <div className="grid gap-3 sm:grid-cols-3">
+                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                     {partField('PACKAGE')}
                     {partField('PACKAGE QUANTITY')}
                     {partField('PACKAGE TYPE')}

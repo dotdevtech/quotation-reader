@@ -8,6 +8,8 @@ export default function Settings() {
   const [msg, setMsg] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [clearBusy, setClearBusy] = useState(false)
+  const [clearConfirm, setClearConfirm] = useState('')
 
   useEffect(() => {
     api
@@ -73,7 +75,7 @@ export default function Settings() {
     key: keyof AppSettings,
     opts?: { type?: string; placeholder?: string; hint?: string }
   ) => (
-    <label className="block text-xs text-zinc-400">
+    <label className="block text-xs text-slate-500">
       {label}
       <input
         type={opts?.type || 'text'}
@@ -82,9 +84,9 @@ export default function Settings() {
         onChange={(e) =>
           set(key, key === 'imap_port' ? Number(e.target.value) || 0 : e.target.value)
         }
-        className="mt-1 w-full rounded border border-[#444] bg-[#111] px-3 py-2 text-sm text-white outline-none focus:border-red-500"
+        className="mt-1 w-full rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-red-500"
       />
-      {opts?.hint && <span className="mt-1 block text-[11px] text-zinc-600">{opts.hint}</span>}
+      {opts?.hint && <span className="mt-1 block text-[11px] text-slate-600">{opts.hint}</span>}
     </label>
   )
 
@@ -94,8 +96,8 @@ export default function Settings() {
 
       <div className="flex-1 overflow-y-auto p-6">
         <form onSubmit={onSubmit} className="mx-auto max-w-xl space-y-6">
-          <section className="rounded-xl border border-[#333] bg-[#1e1e1e] p-5">
-            <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-zinc-400">
+          <section className="rounded-xl border border-rose-200 bg-gradient-to-br from-white to-rose-50/70 p-5 shadow-sm">
+            <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-rose-800">
               Login password
             </h2>
             {field('New login password', 'login_password', {
@@ -105,8 +107,8 @@ export default function Settings() {
             })}
           </section>
 
-          <section className="rounded-xl border border-[#333] bg-[#1e1e1e] p-5">
-            <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-zinc-400">
+          <section className="rounded-xl border border-sky-200 bg-gradient-to-br from-white to-sky-50/70 p-5 shadow-sm">
+            <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-sky-800">
               Email (IMAP)
             </h2>
             <div className="grid gap-4 sm:grid-cols-2">
@@ -122,8 +124,8 @@ export default function Settings() {
             </div>
           </section>
 
-          <section className="rounded-xl border border-[#333] bg-[#1e1e1e] p-5">
-            <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-zinc-400">
+          <section className="rounded-xl border border-amber-200 bg-gradient-to-br from-white to-amber-50/70 p-5 shadow-sm">
+            <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-amber-900">
               OpenAI
             </h2>
             <div className="space-y-4">
@@ -135,8 +137,8 @@ export default function Settings() {
             </div>
           </section>
 
-          <section className="rounded-xl border border-[#333] bg-[#1e1e1e] p-5">
-            <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-zinc-400">
+          <section className="rounded-xl border border-emerald-200 bg-gradient-to-br from-white to-emerald-50/70 p-5 shadow-sm">
+            <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-emerald-800">
               Google Sheet webhook
             </h2>
             <div className="space-y-4">
@@ -154,17 +156,70 @@ export default function Settings() {
             </div>
           </section>
 
-          {error && <div className="text-sm text-red-400">{error}</div>}
-          {msg && <div className="text-sm text-emerald-400">{msg}</div>}
+          {error && <div className="text-sm text-red-600">{error}</div>}
+          {msg && <div className="text-sm text-emerald-700">{msg}</div>}
 
           <button
             type="submit"
             disabled={busy}
-            className="cursor-pointer rounded bg-red-600 px-6 py-2.5 text-sm font-medium text-white hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-50"
+            className="cursor-pointer rounded-lg bg-red-700 px-6 py-2.5 text-sm font-semibold text-white hover:bg-red-600 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {busy ? 'Saving…' : 'Save settings'}
           </button>
         </form>
+
+        <section className="mx-auto mt-8 max-w-xl rounded-xl border border-red-300 bg-gradient-to-br from-white to-red-50 p-5 shadow-sm">
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-red-800">
+            Danger zone — clear local inbox
+          </h2>
+          <p className="mt-2 text-sm text-slate-600">
+            Removes every email from this app’s Inbox (Email / Scanned / Sent), including scanned
+            data and saved attachment files on this computer. Your real mailbox on the mail server
+            is not touched. Settings (IMAP, password, OpenAI, webhook) stay.
+          </p>
+          <p className="mt-2 text-sm font-medium text-red-700">
+            Type <span className="rounded bg-red-100 px-1.5 py-0.5 font-mono">DELETE</span> below,
+            then confirm.
+          </p>
+          <label className="mt-3 block text-xs text-slate-500">
+            Confirmation
+            <input
+              type="text"
+              value={clearConfirm}
+              onChange={(e) => setClearConfirm(e.target.value)}
+              placeholder="Type DELETE"
+              autoComplete="off"
+              className="mt-1 w-full rounded border border-red-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-red-500"
+            />
+          </label>
+          <button
+            type="button"
+            disabled={clearBusy || clearConfirm.trim().toUpperCase() !== 'DELETE'}
+            onClick={async () => {
+              const ok = window.confirm(
+                'Are you sure?\n\nThis will empty the Inbox on this system (all local emails, scans, and attachments).\n\nYour real email account is NOT deleted.\n\nContinue?',
+              )
+              if (!ok) return
+              setClearBusy(true)
+              setError('')
+              setMsg('')
+              try {
+                const res = await api.clearInbox('DELETE')
+                setClearConfirm('')
+                setMsg(
+                  `${res.message} Removed ${res.emails_deleted} email(s), ${res.extractions_deleted} scan(s).`,
+                )
+              } catch (err) {
+                setError(String(err))
+              } finally {
+                setClearBusy(false)
+              }
+            }}
+            className="mt-4 cursor-pointer rounded-lg bg-red-800 px-5 py-2.5 text-sm font-semibold text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {clearBusy ? 'Clearing…' : 'Clear all local emails'}
+          </button>
+        </section>
       </div>
     </div>
   )

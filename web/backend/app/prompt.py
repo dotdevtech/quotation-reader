@@ -72,19 +72,37 @@ Map synonyms / codes into the list above, e.g.:
   SV, serviceable → SV- Serviceable; RB, refurbished → RB-Refurbish; ANY → ANY.
 If the source condition cannot be mapped, OMIT "CONDITION" and put the raw text in "NOTES" as "Original CONDITION (unmapped): …".
 
+CURRENCY — output EXACTLY one alphabetic code from this list only (NEVER a symbol):
+USD | EUR | CAD | GBP | YEN | PKR | AED | OTHER
+Map symbols and names: $ / US$ / dollar → USD; € / euro → EUR; C$ / Canadian → CAD; £ / pound → GBP; ¥ / JPY / yen → YEN; Rs / rupee → PKR; dirham → AED.
+If the currency is clear but not in the list, use OTHER (and optionally note the raw currency in NOTES).
+Never write $, €, £, ¥, or any other symbol into "CURRENCY".
+
 PRICE UNIT (unit / each price) — this is the price PER UNIT for the line:
 Treat these labels (case-insensitive) as PRICE UNIT: Unit Price, Unit Price $, Price Each, Each, Price/Each, Unit Each, Unit Ea, Ea Price, Per Unit, Per Ea, Price/Unit, Unit $, Sell Price, Net Unit Price, List Price (when clearly the quoted unit sell price).
-Extract the numeric money amount (keep currency symbols/$ commas as written if present). Do NOT put the line extension/total into PRICE UNIT.
+Extract the numeric money amount (commas/decimals as written). Put the currency CODE in "CURRENCY", not as a symbol-only CURRENCY value. Do NOT put the line extension/total into PRICE UNIT.
+
+"NO QUOTE" / NOT-QUOTING IN THE UNIT PRICE CELL (CRITICAL — do not miss):
+Vendors often write text INSTEAD OF a number in the Unit Price / Each / Ext Price cell, e.g.:
+  "No Quote", "No quote", "NO QUOTE", "NQ", "N/Q", "Not quoting", "No Bid", "No bid", "Not quoted", "TBD", "N/A" (when clearly meaning no price offered).
+When that wording appears in or next to the unit-price / line-price area for a part line:
+  1) Set "PRICE TYPE" = "No quote" for THAT line.
+  2) OMIT "PRICE UNIT" and OMIT "TOTAL PRICE" (do NOT invent $0 or a fake number).
+  3) ALWAYS add to "NOTES" a clear phrase such as: "Unit price: No Quote" (keep the vendor's exact wording if different, e.g. "Unit price: Not quoting").
+If BOTH a number and "no quote" appear for different lines, apply No Quote only to the lines marked no-quote; keep normal prices on quoted lines.
+If the whole quotation says no quote for a part, still output that part object with PRICE TYPE No quote + NOTES as above (do not drop the line).
 
 TOTAL PRICE (line extension / line total) — this is qty × unit (or the stated line total):
 Treat these labels as TOTAL PRICE: Total, Total Price, Total $, Ext, Ext., Extension, Ext Price, Extended, Extended Price, Line Total, Line Ext, Amount, Net Amount, Line Amount.
 If only unit price + qty are present and total is missing, you MAY compute TOTAL PRICE = QUANTITY OFFERED × PRICE UNIT when both are clear numbers; otherwise leave TOTAL PRICE omitted.
 Never swap PRICE UNIT and TOTAL PRICE.
+Never compute TOTAL PRICE when the unit price cell is "No Quote" / NQ / not quoting.
 
 PRICE TYPE — output EXACTLY one of these strings only:
 Outright | Exchange | Make Offer | Negotiable | Need info | No quote
 IMPORTANT LABEL ALIAS: On vendor PDFs/emails, this field is often labeled "Quote Type", "QuoteType", "Type of Quote", "Pricing Type", or "Sale Type" — those are ALL the same as "PRICE TYPE". Always read that value into "PRICE TYPE" (never invent a "QUOTE TYPE" key).
 Map close meaning (e.g. outright → Outright; firm/fixed/sale → Outright; MO → Make Offer; NQ → No quote). If unmappable, OMIT "PRICE TYPE" and put the raw text in "NOTES" as "Original PRICE TYPE (unmapped): …".
+When the unit-price cell itself is no-quote wording (see above), PRICE TYPE MUST be "No quote" even if no separate Quote Type column exists.
 
 CERTIFICATION DOCUMENTS — one or more from this list only (multi allowed). Join multiple with "; ":
 FAA 8130 | EASA Form 1 | COC | NONE | OEM CERT | DUAL | MATERIAL TEST CERT | CALIBIRATION | JAA F1
@@ -97,6 +115,7 @@ Never put PO-level minimum into Minimum Line Amount or vice versa.
 
 NOTES (Additional Notes) — MANDATORY capture of restrictions / crucial terms:
 Put into "NOTES" any important commercial or operational restrictions that are not already a dedicated field, including (examples): subject to prior sale, quote validity caveats, lead-time caveats, inspection/test requirements, return/restocking rules, hazmat, ITAR/EAR, lot/batch/trace requirements beyond TRACE field, payment terms details, freight terms (FOB/Ex Works), cancellation policy, "as is", limited certification, core charge, exchange core due, warranty limits, stock tip notes, special instructions, comments blocks, and any "terms & conditions" snippets that affect buying.
+ALWAYS include in NOTES when the vendor wrote No Quote / NQ / Not quoting / No Bid (or similar) in the unit price or line price area — e.g. "Unit price: No Quote".
 If the PDF/email has a Comments / Special Instructions / Remarks / Notes section — copy the substance into NOTES (summarize only if extremely long; prefer keeping the binding phrases).
 Do NOT leave NOTES empty when such restrictions clearly appear. Join multiple note fragments with "; ".
 

@@ -216,6 +216,7 @@ def list_emails(
     date_to: Optional[str] = None,
     extraction_status: Optional[str] = None,
     forward_status: Optional[str] = None,
+    folder: Optional[str] = None,
     limit: int = 200,
     offset: int = 0,
 ) -> tuple[list[dict[str, Any]], int]:
@@ -225,20 +226,38 @@ def list_emails(
         clauses.append("(subject LIKE ? OR from_addr LIKE ? OR to_addr LIKE ?)")
         like = f"%{q.strip()}%"
         params.extend([like, like, like])
+    # Compare by calendar day (YYYY-MM-DD) so time/timezone suffixes cannot
+    # push an email outside the selected range incorrectly.
     if date_from:
-        clauses.append("(date_iso IS NOT NULL AND date_iso >= ?)")
-        params.append(date_from)
+        day_from = str(date_from).strip()[:10]
+        if day_from:
+            clauses.append("(date_iso IS NOT NULL AND substr(date_iso, 1, 10) >= ?)")
+            params.append(day_from)
     if date_to:
-        clauses.append("(date_iso IS NOT NULL AND date_iso <= ?)")
-        params.append(date_to + "T23:59:59" if "T" not in date_to else date_to)
-    if extraction_status and extraction_status.strip() and extraction_status.strip() != "all":
-        status = extraction_status.strip().lower()
-        clauses.append("COALESCE(extraction_status, 'none') = ?")
-        params.append(status)
-    if forward_status and forward_status.strip() and forward_status.strip() != "all":
-        fs = forward_status.strip().lower()
-        clauses.append("COALESCE(forward_status, 'none') = ?")
-        params.append(fs)
+        day_to = str(date_to).strip()[:10]
+        if day_to:
+            clauses.append("(date_iso IS NOT NULL AND substr(date_iso, 1, 10) <= ?)")
+            params.append(day_to)
+    folder_key = (folder or "").strip().lower()
+    if folder_key in ("email", "scanned", "sent"):
+        # email = not scanned yet (and not sent); scanned = scanned but not sent; sent = sheet sent
+        if folder_key == "email":
+            clauses.append("COALESCE(extraction_status, 'none') != 'completed'")
+            clauses.append("COALESCE(forward_status, 'none') != 'sent'")
+        elif folder_key == "scanned":
+            clauses.append("COALESCE(extraction_status, 'none') = 'completed'")
+            clauses.append("COALESCE(forward_status, 'none') != 'sent'")
+        else:
+            clauses.append("COALESCE(forward_status, 'none') = 'sent'")
+    else:
+        if extraction_status and extraction_status.strip() and extraction_status.strip() != "all":
+            status = extraction_status.strip().lower()
+            clauses.append("COALESCE(extraction_status, 'none') = ?")
+            params.append(status)
+        if forward_status and forward_status.strip() and forward_status.strip() != "all":
+            fs = forward_status.strip().lower()
+            clauses.append("COALESCE(forward_status, 'none') = ?")
+            params.append(fs)
 
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     with connect() as conn:
@@ -321,6 +340,36 @@ def get_latest_extraction_for_email(uid: str) -> Optional[dict[str, Any]]:
             (uid,),
         ).fetchone()
         return _extraction_row(row) if row else None
+
+
+def clear_local_inbox() -> dict[str, int]:
+    """Delete all cached emails, extractions, and jobs from this machine.
+
+    Does not touch IMAP on the mail server — only local SQLite data.
+    Keeps login / IMAP / OpenAI settings and auto-sync preferences.
+    """
+    with connect() as conn:
+        emails_n = conn.execute("SELECT COUNT(*) AS c FROM emails").fetchone()["c"]
+        extractions_n = conn.execute("SELECT COUNT(*) AS c FROM extractions").fetchone()["c"]
+        jobs_n = conn.execute("SELECT COUNT(*) AS c FROM jobs").fetchone()["c"]
+        conn.execute("DELETE FROM extractions")
+        conn.execute("DELETE FROM jobs")
+        conn.execute("DELETE FROM emails")
+        # Reset sync markers so a fresh Sync can refill the inbox
+        for key in (
+            "last_sync_at",
+            "last_sync_count",
+            "last_sync_start",
+            "last_sync_end",
+            "last_sync_uids",
+        ):
+            conn.execute("DELETE FROM sync_state WHERE key = ?", (key,))
+        conn.commit()
+    return {
+        "emails_deleted": int(emails_n),
+        "extractions_deleted": int(extractions_n),
+        "jobs_deleted": int(jobs_n),
+    }
 
 
 def set_sync_state(key: str, value: str) -> None:

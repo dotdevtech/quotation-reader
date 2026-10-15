@@ -1,4 +1,4 @@
-"""Controlled vocabularies for CONDITION, PRICE TYPE, and CERTIFICATION DOCUMENTS."""
+"""Controlled vocabularies for CONDITION, PRICE TYPE, CURRENCY, and CERTIFICATION DOCUMENTS."""
 
 from __future__ import annotations
 
@@ -27,6 +27,18 @@ PRICE_TYPE_OPTIONS = [
     "Negotiable",
     "Need info",
     "No quote",
+]
+
+# Alphabetic codes only — never $, €, £, ¥, etc.
+CURRENCY_OPTIONS = [
+    "USD",
+    "EUR",
+    "CAD",
+    "GBP",
+    "YEN",
+    "PKR",
+    "AED",
+    "OTHER",
 ]
 
 CERTIFICATION_OPTIONS = [
@@ -99,6 +111,56 @@ _CONDITION_ALIASES: dict[str, str] = {
     "cd rb": "RB-Refurbish",
 }
 
+_CURRENCY_ALIASES: dict[str, str] = {
+    # Symbols → codes
+    "$": "USD",
+    "us$": "USD",
+    "u.s.$": "USD",
+    "€": "EUR",
+    "eur€": "EUR",
+    "£": "GBP",
+    "₤": "GBP",
+    "¥": "YEN",
+    "￥": "YEN",
+    "د.إ": "AED",
+    "aed": "AED",
+    # Codes / names
+    "usd": "USD",
+    "us dollar": "USD",
+    "us dollars": "USD",
+    "dollar": "USD",
+    "dollars": "USD",
+    "american dollar": "USD",
+    "eur": "EUR",
+    "euro": "EUR",
+    "euros": "EUR",
+    "cad": "CAD",
+    "c$": "CAD",
+    "canadian": "CAD",
+    "canadian dollar": "CAD",
+    "canadian dollars": "CAD",
+    "gbp": "GBP",
+    "pound": "GBP",
+    "pounds": "GBP",
+    "pound sterling": "GBP",
+    "sterling": "GBP",
+    "british pound": "GBP",
+    "yen": "YEN",
+    "jpy": "YEN",
+    "japanese yen": "YEN",
+    "pkr": "PKR",
+    "rs": "PKR",
+    "rupee": "PKR",
+    "rupees": "PKR",
+    "pakistani rupee": "PKR",
+    "pakistani rupees": "PKR",
+    "dirham": "AED",
+    "dirhams": "AED",
+    "uae dirham": "AED",
+    "other": "OTHER",
+}
+
+
 _PRICE_ALIASES: dict[str, str] = {
     "outright": "Outright",
     "firm": "Outright",
@@ -119,8 +181,12 @@ _PRICE_ALIASES: dict[str, str] = {
     "tbd": "Need info",
     "no quote": "No quote",
     "nq": "No quote",
+    "n/q": "No quote",
+    "n q": "No quote",
     "not quoting": "No quote",
+    "not quoted": "No quote",
     "no bid": "No quote",
+    "nobid": "No quote",
 }
 
 _CERT_ALIASES: dict[str, str] = {
@@ -176,6 +242,42 @@ def match_price_type(raw: str) -> str | None:
         if _norm(opt) == s:
             return opt
     return _PRICE_ALIASES.get(s)
+
+
+def match_currency(raw: str) -> str | None:
+    """Map symbols/names/codes → alphabetic CURRENCY option (never keep $, €, etc.)."""
+    text = (raw or "").strip()
+    if not text:
+        return None
+    # Exact option (case-insensitive)
+    upper = text.upper().strip()
+    for opt in CURRENCY_OPTIONS:
+        if opt == upper:
+            return opt
+    s = _norm(text)
+    if s in _CURRENCY_ALIASES:
+        return _CURRENCY_ALIASES[s]
+    # Bare / leading symbols
+    for sym, code in (
+        ("$", "USD"),
+        ("€", "EUR"),
+        ("£", "GBP"),
+        ("₤", "GBP"),
+        ("¥", "YEN"),
+        ("￥", "YEN"),
+    ):
+        if text == sym or text.startswith(sym) or s.startswith(sym):
+            return code
+    # ISO-like token inside the string (JPY → YEN)
+    m = re.search(r"(?i)\b(usd|eur|cad|gbp|yen|jpy|pkr|aed)\b", text)
+    if m:
+        token = m.group(1).lower()
+        return _CURRENCY_ALIASES.get(token) or token.upper()
+    # Wordy names
+    for alias, code in _CURRENCY_ALIASES.items():
+        if len(alias) >= 3 and alias in s:
+            return code
+    return None
 
 
 def match_certification_token(raw: str) -> str | None:
@@ -437,7 +539,7 @@ def normalize_vendor_address(out: dict[str, Any]) -> None:
 
 
 def normalize_offer(offer: dict[str, Any]) -> dict[str, Any]:
-    """Map CONDITION / PRICE TYPE / CERTIFICATION to controlled values; leftovers → NOTES."""
+    """Map CONDITION / PRICE TYPE / CURRENCY / CERTIFICATION to controlled values; leftovers → NOTES."""
     out = {k: v for k, v in offer.items() if v is not None and str(v).strip()}
     notes = str(out.get("NOTES") or "").strip()
 
@@ -463,6 +565,33 @@ def normalize_offer(offer: dict[str, Any]) -> dict[str, Any]:
         else:
             del out["PRICE TYPE"]
             notes = _append_note(notes, f"Original PRICE TYPE (unmapped): {raw}")
+
+    if "CURRENCY" in out:
+        raw = str(out["CURRENCY"]).strip()
+        matched = match_currency(raw)
+        if matched:
+            out["CURRENCY"] = matched
+        else:
+            # Unknown currency → OTHER (never keep a symbol like $ or €)
+            out["CURRENCY"] = "OTHER"
+            if raw.upper() not in ("OTHER",):
+                notes = _append_note(notes, f"Original CURRENCY (unmapped): {raw}")
+
+    # Unit-price cell sometimes contains "No Quote" / NQ instead of a number.
+    if "PRICE UNIT" in out:
+        unit_raw = str(out["PRICE UNIT"]).strip()
+        unit_as_type = match_price_type(unit_raw)
+        looks_no_quote = unit_as_type == "No quote" or bool(
+            re.fullmatch(
+                r"(?i)\s*(no\s*quote|n\s*/?\s*q|nq|not\s*quot(?:ing|ed)|no\s*bid|n/?a)\s*",
+                unit_raw,
+            )
+        )
+        if looks_no_quote:
+            del out["PRICE UNIT"]
+            out.pop("TOTAL PRICE", None)
+            out["PRICE TYPE"] = "No quote"
+            notes = _append_note(notes, f"Unit price: {unit_raw}")
 
     if "CERTIFICATION DOCUMENTS" in out:
         raw = str(out["CERTIFICATION DOCUMENTS"]).strip()

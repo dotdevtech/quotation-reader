@@ -112,6 +112,22 @@ def attachment_dir(uid: str) -> Path:
     return ATTACH_ROOT / str(uid)
 
 
+def clear_all_attachment_files() -> int:
+    """Remove all on-disk attachment folders. Returns number of uid folders removed."""
+    import shutil
+
+    if not ATTACH_ROOT.exists():
+        return 0
+    removed = 0
+    for child in list(ATTACH_ROOT.iterdir()):
+        if child.is_dir():
+            shutil.rmtree(child, ignore_errors=True)
+            removed += 1
+        elif child.is_file():
+            child.unlink(missing_ok=True)
+    return removed
+
+
 def store_attachments(uid: str, attachments: list[AttachmentInfo]) -> list[dict[str, Any]]:
     """Write document attachments to disk (skips images)."""
     dest = attachment_dir(uid)

@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import db
+from .attachments import clear_all_attachment_files
 from .auth import create_session, destroy_session, require_auth, validate_login
 from .config import get_settings
 from .forward import export_extraction, forward_emails, forward_extraction
@@ -198,6 +199,38 @@ def put_auto_sync(body: AutoSyncUpdate) -> dict[str, Any]:
     return set_auto_sync_config(body.enabled, body.interval_minutes)
 
 
+class ClearInboxRequest(BaseModel):
+    """Require explicit confirmation so the inbox cannot be wiped by accident."""
+
+    confirm: str = Field(min_length=1)
+
+
+@app.post("/api/inbox/clear", dependencies=[Depends(require_auth)])
+def clear_inbox(body: ClearInboxRequest) -> dict[str, Any]:
+    """Wipe local inbox cache (emails, scans, jobs, attachment files).
+
+    Does NOT delete anything from the real IMAP mailbox — only this app's local copy.
+    """
+    if body.confirm.strip().upper() != "DELETE":
+        raise HTTPException(
+            status_code=400,
+            detail='Type DELETE to confirm clearing the local inbox.',
+        )
+    if get_sync_status().get("running"):
+        raise HTTPException(
+            status_code=409,
+            detail="Sync is running. Wait until it finishes, then try again.",
+        )
+    counts = db.clear_local_inbox()
+    folders = clear_all_attachment_files()
+    return {
+        "ok": True,
+        "message": "Local inbox cleared. Use Sync Data to pull emails again.",
+        **counts,
+        "attachment_folders_deleted": folders,
+    }
+
+
 @app.get("/api/emails", dependencies=[Depends(require_auth)])
 def emails(
     q: str = "",
@@ -205,6 +238,7 @@ def emails(
     date_to: Optional[str] = None,
     extraction_status: Optional[str] = None,
     forward_status: Optional[str] = None,
+    folder: Optional[str] = None,
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ) -> dict[str, Any]:
@@ -214,6 +248,7 @@ def emails(
         date_to=date_to,
         extraction_status=extraction_status,
         forward_status=forward_status,
+        folder=folder,
         limit=limit,
         offset=offset,
     )
@@ -341,6 +376,7 @@ def master_fields() -> dict[str, Any]:
     from .field_options import (
         CERTIFICATION_OPTIONS,
         CONDITION_OPTIONS,
+        CURRENCY_OPTIONS,
         PRICE_TYPE_OPTIONS,
     )
     from .prompt import MASTER_FIELDS
@@ -349,6 +385,7 @@ def master_fields() -> dict[str, Any]:
         "fields": MASTER_FIELDS,
         "condition_options": CONDITION_OPTIONS,
         "price_type_options": PRICE_TYPE_OPTIONS,
+        "currency_options": CURRENCY_OPTIONS,
         "certification_options": CERTIFICATION_OPTIONS,
     }
 

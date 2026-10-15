@@ -39,7 +39,7 @@ export default function RequireAuth({ children }: { children: ReactNode }) {
 
   if (state === 'loading') {
     return (
-      <div className="flex h-full items-center justify-center text-sm text-zinc-400">Loading…</div>
+      <div className="flex h-full items-center justify-center text-sm text-slate-500">Loading…</div>
     )
   }
   if (state === 'setup') return <Navigate to="/setup" replace />

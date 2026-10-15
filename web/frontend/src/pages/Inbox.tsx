@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   PAGE_SIZE,
@@ -16,14 +16,22 @@ import AttachmentPreviewPanel from '../components/AttachmentPreviewPanel'
 import AppNav from '../components/AppNav'
 import { downloadAttachmentFile } from '../openAttachment'
 
+/** Local calendar YYYY-MM-DD (not UTC — avoids off-by-one near midnight). */
+function localISODate(d = new Date()) {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
 function todayISO() {
-  return new Date().toISOString().slice(0, 10)
+  return localISODate()
 }
 
 function daysAgoISO(days: number) {
   const d = new Date()
   d.setDate(d.getDate() - days)
-  return d.toISOString().slice(0, 10)
+  return localISODate(d)
 }
 
 function shortFrom(from: string) {
@@ -32,20 +40,12 @@ function shortFrom(from: string) {
   return from.length > 42 ? from.slice(0, 42) + '…' : from
 }
 
-const STATUS_TABS: { value: string; label: string }[] = [
-  { value: 'all', label: 'All' },
-  { value: 'none', label: 'Not started' },
-  { value: 'pending', label: 'Queued' },
-  { value: 'running', label: 'Processing' },
-  { value: 'completed', label: 'Complete' },
-  { value: 'error', label: 'Error' },
-]
+type MailFolder = 'email' | 'scanned' | 'sent'
 
-const FORWARD_TABS: { value: string; label: string }[] = [
-  { value: 'all', label: 'Any send' },
-  { value: 'none', label: 'Not sent' },
-  { value: 'sent', label: 'Sent' },
-  { value: 'error', label: 'Send failed' },
+const FOLDER_TABS: { value: MailFolder; label: string; hint: string }[] = [
+  { value: 'email', label: 'Email', hint: 'Not scanned yet' },
+  { value: 'scanned', label: 'Scanned', hint: 'Scanned, not sent to sheet' },
+  { value: 'sent', label: 'Sent', hint: 'Sent to Google Sheet' },
 ]
 
 function StatusTag({
@@ -63,39 +63,39 @@ function StatusTag({
     <div className="flex shrink-0 flex-col items-end gap-1">
       {s === 'completed' && (
         <span
-          className="rounded bg-emerald-900/90 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-300"
-          title="OpenAI extraction complete — data saved"
+          className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-800"
+          title="Scanned — data saved"
         >
-          Complete
+          Scanned
         </span>
       )}
       {s === 'pending' && (
         <span
-          className="rounded bg-sky-900/90 px-1.5 py-0.5 text-[10px] font-semibold text-sky-300"
-          title="Queued for OpenAI"
+          className="rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-semibold text-sky-800"
+          title="Queued for scan"
         >
           Queued
         </span>
       )}
       {s === 'running' && (
         <span
-          className="rounded bg-amber-900/90 px-1.5 py-0.5 text-[10px] font-semibold text-amber-300"
-          title="OpenAI is processing this email"
+          className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800"
+          title="Scanning in progress"
         >
-          Processing
+          Scanning
         </span>
       )}
       {s === 'error' && (
         <span
-          className="rounded bg-red-900/90 px-1.5 py-0.5 text-[10px] font-semibold text-red-300"
-          title={error || 'OpenAI extraction failed — open email for details'}
+          className="rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-semibold text-red-700"
+          title={error || 'Scan failed — open email for details'}
         >
           Error
         </span>
       )}
       {f === 'sent' && (
         <span
-          className="rounded bg-violet-900/90 px-1.5 py-0.5 text-[10px] font-semibold text-violet-300"
+          className="rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-semibold text-sky-800"
           title="Sent to Google Sheet webhook"
         >
           Sent
@@ -103,7 +103,7 @@ function StatusTag({
       )}
       {f === 'error' && (
         <span
-          className="rounded bg-orange-900/90 px-1.5 py-0.5 text-[10px] font-semibold text-orange-300"
+          className="rounded bg-orange-100 px-1.5 py-0.5 text-[10px] font-semibold text-orange-800"
           title="Sheet webhook send failed"
         >
           Send failed
@@ -123,8 +123,12 @@ export default function Inbox() {
   const [qDebounced, setQDebounced] = useState('')
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
-  const [statusFilter, setStatusFilter] = useState('all')
-  const [forwardFilter, setForwardFilter] = useState('all')
+  const [folder, setFolder] = useState<MailFolder>('email')
+  const [folderCounts, setFolderCounts] = useState<Record<MailFolder, number>>({
+    email: 0,
+    scanned: 0,
+    sent: 0,
+  })
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [activeUid, setActiveUid] = useState<string | null>(null)
   const [detail, setDetail] = useState<EmailDetail | null>(null)
@@ -139,27 +143,35 @@ export default function Inbox() {
   const [extractionError, setExtractionError] = useState<string | null>(null)
   const [compareOpen, setCompareOpen] = useState(false)
   const [previewTabKey, setPreviewTabKey] = useState<string>('email')
+  const loadSeq = useRef(0)
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
   const rangeStart = total === 0 ? 0 : (page - 1) * pageSize + 1
   const rangeEnd = Math.min(page * pageSize, total)
 
-  const filtersActive = !!(
-    qDebounced ||
-    dateFrom ||
-    dateTo ||
-    statusFilter !== 'all' ||
-    forwardFilter !== 'all'
-  )
+  const filtersActive = !!(qDebounced || dateFrom || dateTo)
 
   const clearFilters = () => {
     setQ('')
     setQDebounced('')
     setDateFrom('')
     setDateTo('')
-    setStatusFilter('all')
-    setForwardFilter('all')
     setPage(1)
+  }
+
+  const switchFolder = (next: MailFolder) => {
+    if (next === folder) return
+    setFolder(next)
+    setSelected(new Set())
+    setPage(1)
+    setActiveUid(null)
+    setDetail(null)
+    setOffers([])
+    setExtractionId(null)
+    setExtractionStatus('none')
+    setExtractionError(null)
+    setCompareOpen(false)
+    setPreviewTabKey('email')
   }
 
   useEffect(() => {
@@ -167,25 +179,58 @@ export default function Inbox() {
     return () => clearTimeout(t)
   }, [q])
 
+  /** Normalize range so From is never after To. */
+  const filterDates = useMemo(() => {
+    let from = dateFrom || undefined
+    let to = dateTo || undefined
+    if (from && to && from > to) {
+      ;[from, to] = [to, from]
+    }
+    return { date_from: from, date_to: to }
+  }, [dateFrom, dateTo])
+
   const loadEmails = useCallback(async () => {
+    const seq = ++loadSeq.current
     try {
       const data = await api.emails({
         q: qDebounced,
-        date_from: dateFrom || undefined,
-        date_to: dateTo || undefined,
-        extraction_status: statusFilter,
-        forward_status: forwardFilter,
+        date_from: filterDates.date_from,
+        date_to: filterDates.date_to,
+        folder,
         limit: pageSize,
         offset: (page - 1) * pageSize,
       })
+      if (seq !== loadSeq.current) return
       setEmails(data.items)
       setTotal(data.total)
       const maxPage = Math.max(1, Math.ceil(data.total / pageSize))
       if (page > maxPage) setPage(maxPage)
     } catch (e) {
+      if (seq !== loadSeq.current) return
       setError(String(e))
     }
-  }, [qDebounced, dateFrom, dateTo, statusFilter, forwardFilter, page, pageSize])
+  }, [qDebounced, filterDates, folder, page, pageSize])
+
+  const loadFolderCounts = useCallback(async () => {
+    try {
+      const entries = await Promise.all(
+        (['email', 'scanned', 'sent'] as MailFolder[]).map(async (f) => {
+          const data = await api.emails({
+            q: qDebounced,
+            date_from: filterDates.date_from,
+            date_to: filterDates.date_to,
+            folder: f,
+            limit: 1,
+            offset: 0,
+          })
+          return [f, data.total] as const
+        }),
+      )
+      setFolderCounts(Object.fromEntries(entries) as Record<MailFolder, number>)
+    } catch {
+      /* ignore */
+    }
+  }, [qDebounced, filterDates])
 
   const refreshSync = useCallback(async () => {
     try {
@@ -205,9 +250,14 @@ export default function Inbox() {
   }, [loadEmails])
 
   useEffect(() => {
-    setPage(1)
-  }, [qDebounced, dateFrom, dateTo, statusFilter, forwardFilter, pageSize])
+    void loadFolderCounts()
+  }, [loadFolderCounts])
 
+  // Reset to page 1 when filters change — do this before/with load by
+  // syncing page in the same turn when filters change.
+  useEffect(() => {
+    setPage(1)
+  }, [qDebounced, filterDates.date_from, filterDates.date_to, folder, pageSize])
   useEffect(() => {
     if (!sync?.running) return
     const t = setInterval(async () => {
@@ -216,11 +266,12 @@ export default function Inbox() {
       if (!s.running) {
         setPage(1)
         await loadEmails()
+        void loadFolderCounts()
         api.health().then(setHealth).catch(() => undefined)
       }
     }, 2500)
     return () => clearInterval(t)
-  }, [sync?.running, loadEmails])
+  }, [sync?.running, loadEmails, loadFolderCounts])
 
   useEffect(() => {
     const busyAi = emails.some(
@@ -228,7 +279,8 @@ export default function Inbox() {
     )
     if (!busyAi) return
     const t = setInterval(() => {
-      loadEmails()
+      void loadEmails()
+      void loadFolderCounts()
       if (activeUid) {
         api
           .emailExtraction(activeUid)
@@ -242,7 +294,7 @@ export default function Inbox() {
       }
     }, 2500)
     return () => clearInterval(t)
-  }, [emails, activeUid, loadEmails])
+  }, [emails, activeUid, loadEmails, loadFolderCounts])
 
   const openEmail = async (uid: string, opts?: { keepCompare?: boolean }) => {
     const keepCompare = Boolean(opts?.keepCompare)
@@ -311,10 +363,9 @@ export default function Inbox() {
     try {
       const data = await api.emails({
         q: qDebounced,
-        date_from: dateFrom || undefined,
-        date_to: dateTo || undefined,
-        extraction_status: statusFilter,
-        forward_status: forwardFilter,
+        date_from: filterDates.date_from,
+        date_to: filterDates.date_to,
+        folder,
         limit: 1,
         offset,
       })
@@ -384,7 +435,7 @@ export default function Inbox() {
         ),
       )
       setJobMsg(
-        `Queued ${uids.length} email(s) as job #${job_id}. Status tags will update as OpenAI finishes.`,
+        `Queued ${uids.length} email(s) as job #${job_id}. Status will update as scanning finishes.`,
       )
     } catch (e) {
       setError(String(e))
@@ -399,7 +450,7 @@ export default function Inbox() {
       return emails.some((e) => e.uid === uid && e.extraction_status === 'completed')
     })
     if (readyUids.length === 0) {
-      setError('This email must be Complete (extracted) before sending to the sheet.')
+      setError('This email must be Scanned before sending to the sheet.')
       return
     }
     const alreadySent = readyUids.filter((uid) => {
@@ -428,6 +479,11 @@ export default function Inbox() {
           return { ...e, forward_status: failed ? 'error' : 'sent' }
         }),
       )
+      setDetail((prev) => {
+        if (!prev || !readyUids.includes(prev.uid)) return prev
+        const failed = res.errors?.some((x) => x.email_uid === prev.uid)
+        return { ...prev, forward_status: failed ? 'error' : 'sent' }
+      })
       if (!uidsOverride) setSelected(new Set())
       if (res.sent > 0 && res.failed === 0) {
         setJobMsg(`Sent ${res.sent} quotation(s) to Google Sheet.`)
@@ -443,6 +499,7 @@ export default function Inbox() {
         )
       }
       await loadEmails()
+      void loadFolderCounts()
     } catch (e) {
       setJobMsg('')
       setError(String(e))
@@ -458,8 +515,15 @@ export default function Inbox() {
     return `<pre style="white-space:pre-wrap;font-family:Segoe UI,sans-serif">${plain}</pre>`
   }, [detail])
 
+  const compareForward =
+    detail?.forward_status ||
+    (detail ? emails.find((e) => e.uid === detail.uid)?.forward_status : undefined) ||
+    'none'
+  const compareIsScanned = extractionStatus === 'completed'
+  const compareIsSent = compareForward === 'sent'
+
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full max-w-[100vw] flex-col overflow-x-hidden">
       <AppNav
         right={
           <>
@@ -472,125 +536,150 @@ export default function Inbox() {
         }
       />
 
-      <div className="flex flex-wrap items-center gap-2 border-b border-[#333] bg-[#222] px-3 py-2">
+      <div className="flex flex-wrap items-center gap-2 border-b border-sky-200/80 bg-gradient-to-r from-sky-50 via-white to-emerald-50 px-3 py-2.5">
         <input
           type="date"
           value={dateFrom}
           onChange={(e) => setDateFrom(e.target.value)}
           title="From date"
-          className="cursor-pointer rounded border border-[#444] bg-[#111] px-1.5 py-1 text-xs text-white"
+          className="cursor-pointer rounded border border-sky-200 bg-white px-1.5 py-1 text-xs text-slate-900"
         />
-        <span className="text-[10px] text-zinc-500">→</span>
+        <span className="text-[10px] text-slate-500">→</span>
         <input
           type="date"
           value={dateTo}
           onChange={(e) => setDateTo(e.target.value)}
           title="To date"
-          className="cursor-pointer rounded border border-[#444] bg-[#111] px-1.5 py-1 text-xs text-white"
+          className="cursor-pointer rounded border border-sky-200 bg-white px-1.5 py-1 text-xs text-slate-900"
         />
-        <div className="flex gap-0.5">
-          {[
-            ['30d', 30],
-            ['3mo', 90],
-            ['9mo', 270],
-          ].map(([label, days]) => (
+        <div className="flex gap-1">
+          {(
+            [
+              ['30d', 30, 'bg-sky-600 hover:bg-sky-500 text-white'],
+              ['3mo', 90, 'bg-violet-600 hover:bg-violet-500 text-white'],
+              ['9mo', 270, 'bg-orange-600 hover:bg-orange-500 text-white'],
+            ] as const
+          ).map(([label, days, cls]) => (
             <button
-              key={String(label)}
+              key={label}
               type="button"
               onClick={() => {
-                setDateFrom(daysAgoISO(Number(days)))
+                setDateFrom(daysAgoISO(days))
                 setDateTo(todayISO())
               }}
-              className="cursor-pointer rounded px-1.5 py-1 text-[11px] text-zinc-400 hover:bg-[#2a2a2a] hover:text-white"
+              className={`cursor-pointer rounded px-2 py-1 text-[11px] font-semibold shadow-sm ${cls}`}
             >
               {label}
             </button>
           ))}
         </div>
-        <select
-          value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value)}
-          title="Extraction status"
-          className="cursor-pointer rounded border border-[#444] bg-[#111] px-1.5 py-1 text-xs text-white"
-        >
-          {STATUS_TABS.map((t) => (
-            <option key={t.value} value={t.value}>
-              {t.label}
-            </option>
-          ))}
-        </select>
-        <select
-          value={forwardFilter}
-          onChange={(e) => setForwardFilter(e.target.value)}
-          title="Sheet send status"
-          className="cursor-pointer rounded border border-[#444] bg-[#111] px-1.5 py-1 text-xs text-white"
-        >
-          {FORWARD_TABS.map((t) => (
-            <option key={t.value} value={t.value}>
-              {t.label}
-            </option>
-          ))}
-        </select>
         <button
           type="button"
           onClick={clearFilters}
           disabled={!filtersActive}
-          className="cursor-pointer rounded border border-[#444] px-2 py-1 text-[11px] text-zinc-400 hover:bg-[#333] disabled:opacity-40"
+          className="cursor-pointer rounded bg-slate-500 px-2 py-1 text-[11px] font-semibold text-white hover:bg-slate-400 disabled:opacity-40"
         >
           Clear
         </button>
         <button
           type="button"
           onClick={loadEmails}
-          className="cursor-pointer rounded bg-[#333] px-2 py-1 text-[11px] hover:bg-[#444]"
+          className="cursor-pointer rounded bg-indigo-700 px-2 py-1 text-[11px] font-semibold text-white hover:bg-indigo-600"
         >
           Refresh
         </button>
         <Link
           to="/sync"
-          className="cursor-pointer rounded bg-red-600 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-red-500"
+          className="cursor-pointer rounded bg-sky-700 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-sky-600"
         >
           Sync
         </Link>
         {sync?.running && (
-          <span className="text-[11px] text-amber-300">
+          <span className="text-[11px] text-amber-700">
             Syncing… {sync.done}/{sync.total}
           </span>
         )}
         {!health?.imap_configured && (
-          <Link to="/settings" className="cursor-pointer text-[11px] text-amber-400 hover:underline">
+          <Link to="/settings" className="cursor-pointer text-[11px] text-amber-700 hover:underline">
             Configure IMAP →
           </Link>
         )}
       </div>
 
       {(error || jobMsg || sendingSheet) && (
-        <div className="border-b border-[#333] px-4 py-2 text-sm">
+        <div className="border-b border-slate-200 px-4 py-2 text-sm">
           {sendingSheet && (
-            <div className="mb-1 flex items-center gap-2 text-amber-300">
+            <div className="mb-1 flex items-center gap-2 text-amber-700">
               <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-amber-300 border-t-transparent" />
               Sending to Google Sheet — please wait…
             </div>
           )}
-          {error && <div className="text-red-400">{error}</div>}
-          {jobMsg && !sendingSheet && <div className="text-emerald-400">{jobMsg}</div>}
-          {jobMsg && sendingSheet && <div className="text-amber-200/90">{jobMsg}</div>}
+          {error && <div className="text-red-600">{error}</div>}
+          {jobMsg && !sendingSheet && <div className="text-emerald-700">{jobMsg}</div>}
+          {jobMsg && sendingSheet && <div className="text-amber-800">{jobMsg}</div>}
         </div>
       )}
 
-      <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-2">
-        <section className="flex min-h-0 flex-col border-r border-[#333] bg-[#1e1e1e]">
-          <div className="border-b border-[#333] p-3">
-            <div className="flex items-center gap-2 rounded border border-[#444] bg-[#2d2d30] px-3">
-              <span className="text-zinc-500">⌕</span>
+      <div className="grid min-h-0 min-w-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-2">
+        <section className="flex min-h-0 min-w-0 flex-col overflow-hidden border-r border-slate-200 bg-white/90">
+          <div className="grid grid-cols-3 gap-1 border-b border-slate-200 bg-white p-1.5">
+            {FOLDER_TABS.map((t) => {
+              const active = folder === t.value
+              const count = folderCounts[t.value]
+              const styles =
+                t.value === 'email'
+                  ? {
+                      active: 'bg-red-700 text-white shadow-md ring-2 ring-red-300',
+                      idle: 'bg-red-100 text-red-800 hover:bg-red-200',
+                      badgeActive: 'bg-white text-red-700',
+                      badgeIdle: 'bg-red-700 text-white',
+                    }
+                  : t.value === 'scanned'
+                    ? {
+                        active: 'bg-emerald-700 text-white shadow-md ring-2 ring-emerald-300',
+                        idle: 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200',
+                        badgeActive: 'bg-white text-emerald-700',
+                        badgeIdle: 'bg-emerald-700 text-white',
+                      }
+                    : {
+                        active: 'bg-sky-700 text-white shadow-md ring-2 ring-sky-300',
+                        idle: 'bg-sky-100 text-sky-800 hover:bg-sky-200',
+                        badgeActive: 'bg-white text-sky-700',
+                        badgeIdle: 'bg-sky-700 text-white',
+                      }
+              return (
+                <button
+                  key={t.value}
+                  type="button"
+                  title={t.hint}
+                  onClick={() => switchFolder(t.value)}
+                  className={`cursor-pointer rounded-lg px-2 py-2.5 text-center transition-colors ${
+                    active ? styles.active : styles.idle
+                  }`}
+                >
+                  <div className="text-xs font-bold tracking-wide">{t.label}</div>
+                  <div
+                    className={`mt-1 inline-block min-w-[1.75rem] rounded-full px-2 py-0.5 text-[11px] font-semibold tabular-nums ${
+                      active ? styles.badgeActive : styles.badgeIdle
+                    }`}
+                  >
+                    {count.toLocaleString()}
+                  </div>
+                </button>
+              )
+            })}
+          </div>
+          <div className="border-b border-slate-200 p-3">
+            <div className="flex items-center gap-2 rounded border border-slate-300 bg-white px-3">
+              <span className="text-slate-500">⌕</span>
               <input
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
                 placeholder="Search sender, subject, address…"
-                className="w-full cursor-text bg-transparent py-2.5 text-sm outline-none placeholder:text-zinc-500"
+                className="w-full cursor-text bg-transparent py-2.5 text-sm outline-none placeholder:text-slate-500"
               />
             </div>
-            <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-zinc-500">
+            <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
               <label className="flex cursor-pointer items-center gap-2">
                 <input
                   type="checkbox"
@@ -601,12 +690,12 @@ export default function Inbox() {
                 Select all on this page
               </label>
               <div className="flex items-center gap-2">
-                <label className="flex items-center gap-1.5 text-zinc-400">
+                <label className="flex items-center gap-1.5 text-slate-500">
                   Per page
                   <select
                     value={pageSize}
                     onChange={(e) => setPageSize(Number(e.target.value))}
-                    className="cursor-pointer rounded border border-[#444] bg-[#111] px-1.5 py-1 text-xs text-white"
+                    className="cursor-pointer rounded border border-slate-300 bg-white px-1.5 py-1 text-xs text-slate-900"
                     title="How many emails to show on each page"
                   >
                     {PAGE_SIZE_OPTIONS.map((n) => (
@@ -625,12 +714,19 @@ export default function Inbox() {
 
           <div className="min-h-0 flex-1 overflow-y-auto">
             {emails.length === 0 && (
-              <div className="p-8 text-center text-sm text-zinc-500">
-                No emails match these filters.{' '}
-                <Link to="/sync" className="cursor-pointer text-red-400 hover:underline">
-                  Sync Data
-                </Link>{' '}
-                to pull mail, or clear filters.
+              <div className="p-8 text-center text-sm text-slate-500">
+                {folder === 'email' && 'No unscanned emails here.'}
+                {folder === 'scanned' && 'No scanned quotations waiting to send.'}
+                {folder === 'sent' && 'Nothing sent to Google Sheet yet.'}
+                {filtersActive && ' Try clearing search/date filters.'}{' '}
+                {folder === 'email' && (
+                  <>
+                    <Link to="/sync" className="cursor-pointer text-red-700 hover:underline">
+                      Sync Data
+                    </Link>{' '}
+                    to pull mail.
+                  </>
+                )}
               </div>
             )}
             {emails.map((e, i) => {
@@ -639,9 +735,9 @@ export default function Inbox() {
               return (
                 <div
                   key={e.uid}
-                  className={`flex cursor-pointer gap-2 border-b border-[#2a2a2a] px-3 py-3 ${
-                    active ? 'bg-[#3a3a3d]' : i % 2 ? 'bg-[#252526]' : 'bg-[#1e1e1e]'
-                  } hover:bg-[#333337]`}
+                  className={`flex cursor-pointer gap-2 border-b border-slate-200 px-3 py-3 ${
+                    active ? 'bg-red-50 ring-1 ring-inset ring-red-200' : i % 2 ? 'bg-sky-50/40' : 'bg-white'
+                  } hover:bg-amber-50/80`}
                   onClick={() => openEmail(e.uid)}
                 >
                   <input
@@ -654,12 +750,12 @@ export default function Inbox() {
                   <div className="min-w-0 flex-1 text-left">
                     <div className="flex items-start justify-between gap-2">
                       <span
-                        className={`truncate text-sm font-semibold ${active ? 'text-red-400' : 'text-zinc-100'}`}
+                        className={`truncate text-sm font-semibold ${active ? 'text-red-700' : 'text-slate-800'}`}
                       >
                         {shortFrom(e.from_addr)}
                       </span>
                       <div className="flex shrink-0 flex-col items-end gap-1">
-                        <span className="text-xs text-zinc-500">{e.date_str}</span>
+                        <span className="text-xs text-slate-500">{e.date_str}</span>
                         <StatusTag
                           status={e.extraction_status}
                           error={e.extraction_error}
@@ -668,10 +764,10 @@ export default function Inbox() {
                       </div>
                     </div>
                     <div className="mt-0.5 flex items-center gap-2">
-                      <span className="truncate text-sm text-zinc-300">
+                      <span className="truncate text-sm text-slate-600">
                         {e.subject || '(no subject)'}
                       </span>
-                      {!!e.has_attachments && <span className="shrink-0 text-red-400">📎</span>}
+                      {!!e.has_attachments && <span className="shrink-0 text-red-600">📎</span>}
                     </div>
                   </div>
                 </div>
@@ -679,46 +775,46 @@ export default function Inbox() {
             })}
           </div>
 
-          <div className="flex items-center justify-between gap-2 border-t border-[#333] bg-[#181818] px-3 py-2">
+          <div className="flex items-center justify-between gap-2 border-t border-sky-200 bg-gradient-to-r from-sky-50 to-emerald-50 px-3 py-2">
             <button
               type="button"
               disabled={page <= 1}
               onClick={() => setPage((p) => Math.max(1, p - 1))}
-              className="cursor-pointer rounded bg-[#333] px-3 py-1.5 text-xs hover:bg-[#444] disabled:cursor-not-allowed disabled:opacity-40"
+              className="cursor-pointer rounded bg-slate-800 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
             >
               ← Newer
             </button>
-            <span className="text-xs text-zinc-400">
+            <span className="text-xs font-medium text-slate-600">
               Page {page} of {totalPages}
             </span>
             <button
               type="button"
               disabled={page >= totalPages}
               onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-              className="cursor-pointer rounded bg-[#333] px-3 py-1.5 text-xs hover:bg-[#444] disabled:cursor-not-allowed disabled:opacity-40"
+              className="cursor-pointer rounded bg-slate-800 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
             >
               Older →
             </button>
           </div>
 
-          <div className="grid grid-cols-3 gap-1.5 border-t border-[#333] bg-[#181818] px-2 py-2">
+          <div className="grid grid-cols-3 gap-1.5 border-t border-rose-200 bg-gradient-to-r from-rose-50 to-sky-50 px-2 py-2">
             <button
               type="button"
               disabled={selected.size === 0}
               onClick={() => sendToAi(false)}
-              title="Send selected to OpenAI"
-              className="cursor-pointer rounded bg-red-600 px-1 py-1.5 text-[11px] font-medium text-white hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-40"
+              title="Scan selected emails"
+              className="cursor-pointer rounded bg-red-700 px-1 py-1.5 text-[11px] font-semibold text-white shadow-sm hover:bg-red-600 disabled:cursor-not-allowed disabled:opacity-40"
             >
-              OpenAI{selected.size ? ` (${selected.size})` : ''}
+              Scan{selected.size ? ` (${selected.size})` : ''}
             </button>
             <button
               type="button"
               disabled={selected.size === 0}
               onClick={() => sendToAi(true)}
-              title="Re-extract selected (force, uses API again)"
-              className="cursor-pointer rounded border border-[#444] px-1 py-1.5 text-[11px] text-zinc-300 hover:bg-[#2a2a2a] disabled:opacity-40"
+              title="Re-scan selected (force, uses API again)"
+              className="cursor-pointer rounded bg-amber-600 px-1 py-1.5 text-[11px] font-semibold text-white shadow-sm hover:bg-amber-500 disabled:opacity-40"
             >
-              Re-extract
+              Re-scan
             </button>
             <button
               type="button"
@@ -730,7 +826,7 @@ export default function Inbox() {
                 )
               }
               onClick={() => sendToSheet()}
-              className="cursor-pointer rounded bg-violet-700 px-1 py-1.5 text-[11px] font-medium text-white hover:bg-violet-600 disabled:cursor-not-allowed disabled:opacity-40"
+              className="cursor-pointer rounded bg-sky-700 px-1 py-1.5 text-[11px] font-semibold text-white shadow-sm hover:bg-sky-600 disabled:cursor-not-allowed disabled:opacity-40"
               title="Send selected to Google Sheet"
             >
               {sendingSheet ? 'Sending…' : 'Sheet'}
@@ -738,21 +834,21 @@ export default function Inbox() {
           </div>
         </section>
 
-        <section className="flex min-h-0 flex-col bg-[#f4f4f4] text-zinc-900">
+        <section className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-gradient-to-b from-sky-50/50 to-white text-slate-900">
           {!detail && (
-            <div className="flex flex-1 items-center justify-center text-sm text-zinc-500">
+            <div className="flex flex-1 items-center justify-center text-sm text-slate-500">
               {busy ? 'Loading message…' : 'Select an email to preview'}
             </div>
           )}
           {detail && (
-            <div className="min-h-0 flex-1 overflow-y-auto">
-              <div className="border-b border-zinc-200 bg-white px-3 py-2">
+            <div className="min-h-0 flex-1 overflow-auto">
+              <div className="sticky top-0 z-40 border-b border-rose-100 bg-gradient-to-r from-white to-rose-50/95 px-3 py-2 shadow-sm backdrop-blur-sm">
                 <div className="flex items-start gap-2">
                   <div className="min-w-0 flex-1">
                     <h2 className="truncate text-sm font-semibold leading-snug">{detail.subject}</h2>
-                    <p className="mt-0.5 truncate text-[11px] text-zinc-500">
+                    <p className="mt-0.5 truncate text-[11px] text-slate-500">
                       {detail.from_addr}
-                      <span className="mx-1 text-zinc-300">·</span>
+                      <span className="mx-1 text-slate-600">·</span>
                       {detail.date_str}
                     </p>
                   </div>
@@ -760,7 +856,7 @@ export default function Inbox() {
                     <button
                       type="button"
                       onClick={() => setCompareOpen(true)}
-                      className="cursor-pointer rounded bg-red-600 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-red-500"
+                      className="cursor-pointer rounded bg-red-700 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-red-600"
                     >
                       Compare
                     </button>
@@ -768,11 +864,11 @@ export default function Inbox() {
                       type="button"
                       disabled={extractionStatus !== 'completed' || !activeUid || sendingSheet}
                       onClick={() => activeUid && sendToSheet([activeUid])}
-                      className="cursor-pointer rounded bg-violet-700 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-violet-600 disabled:cursor-not-allowed disabled:opacity-40"
+                      className="cursor-pointer rounded bg-sky-600 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-40"
                       title={
                         extractionStatus === 'completed'
-                          ? 'Send this email’s extracted offers to Google Sheet'
-                          : 'Extract with OpenAI first (must be Complete)'
+                          ? 'Send this email’s scanned offers to Google Sheet'
+                          : 'Scan this email first (must be Scanned)'
                       }
                     >
                       {sendingSheet
@@ -786,14 +882,14 @@ export default function Inbox() {
                 </div>
                 {(extractionStatus === 'pending' || extractionStatus === 'running') && (
                   <div className="mt-1.5 text-[11px] text-amber-700">
-                    {extractionStatus === 'pending' ? 'Queued' : 'Processing'} — waiting for OpenAI…
+                    {extractionStatus === 'pending' ? 'Queued' : 'Scanning'} — please wait…
                   </div>
                 )}
                 {extractionStatus === 'error' && (
                   <div className="mt-1.5 rounded border border-red-200 bg-red-50 px-2 py-1.5 text-[11px] text-red-800">
-                    <div className="font-semibold">OpenAI error</div>
+                    <div className="font-semibold">Scan error</div>
                     <div className="mt-0.5 line-clamp-3 whitespace-pre-wrap break-words">
-                      {extractionError || 'Unknown error while extracting this email.'}
+                      {extractionError || 'Unknown error while scanning this email.'}
                     </div>
                     <button
                       type="button"
@@ -805,14 +901,14 @@ export default function Inbox() {
                         }
                       }}
                     >
-                      Retry
+                      Re-scan
                     </button>
                   </div>
                 )}
               </div>
               {detail.attachments?.length > 0 && (
-                <div className="border-b border-zinc-200 bg-zinc-50 px-5 py-2.5">
-                  <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+                <div className="border-b border-slate-200 bg-slate-50 px-5 py-2.5">
+                  <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
                     Attachments ({detail.attachments.length})
                   </div>
                   <ul className="space-y-1.5">
@@ -830,21 +926,21 @@ export default function Inbox() {
                           key={`${a.filename}-${idx}`}
                           className={`flex flex-wrap items-center gap-2 rounded border px-2.5 py-1.5 text-sm ${
                             isOpen
-                              ? 'border-zinc-800 bg-zinc-100'
-                              : 'border-zinc-200 bg-white'
+                              ? 'border-slate-800 bg-slate-100'
+                              : 'border-slate-200 bg-white'
                           }`}
                         >
                           <span
-                            className="mr-auto truncate font-medium text-zinc-800"
+                            className="mr-auto truncate font-medium text-slate-800"
                             title={a.filename}
                           >
                             📎 {a.filename}
-                            <span className="ml-2 text-xs font-normal text-zinc-400">{sizeKb}</span>
+                            <span className="ml-2 text-xs font-normal text-slate-500">{sizeKb}</span>
                           </span>
                           <button
                             type="button"
-                            className={`cursor-pointer rounded px-3 py-1 text-xs text-white ${
-                              isOpen ? 'bg-red-600 hover:bg-red-500' : 'bg-zinc-800 hover:bg-zinc-700'
+                            className={`cursor-pointer rounded px-3 py-1 text-xs text-slate-900 ${
+                              isOpen ? 'bg-red-700 hover:bg-red-600' : 'bg-slate-800 hover:bg-slate-700'
                             }`}
                             onClick={() => {
                               setPreviewTabKey(tabKey)
@@ -859,7 +955,7 @@ export default function Inbox() {
                           </button>
                           <button
                             type="button"
-                            className="cursor-pointer rounded border border-zinc-300 px-3 py-1 text-xs text-zinc-700 hover:bg-zinc-100"
+                            className="cursor-pointer rounded border border-slate-300 px-3 py-1 text-xs text-slate-700 hover:bg-slate-100"
                             onClick={() =>
                               downloadAttachmentFile(downloadUrl, a.filename).catch((e) =>
                                 setError(String(e)),
@@ -890,109 +986,117 @@ export default function Inbox() {
       </div>
 
       {compareOpen && detail && (
-        <div className="fixed inset-0 z-50 flex flex-col bg-[#0f0f0f]/90 backdrop-blur-sm">
-          <div className="flex items-center gap-3 border-b border-[#333] bg-[#1a1a1a] px-4 py-3">
-            <div className="text-sm font-semibold text-white">Comparison</div>
-            <div className="min-w-0 flex-1 truncate text-xs text-zinc-400">
-              {busy ? 'Loading email…' : detail.subject}
-            </div>
-            <div className="flex shrink-0 items-center gap-2">
-              <button
-                type="button"
-                disabled={!canComparePrev || busy}
-                onClick={goComparePrev}
-                className="cursor-pointer rounded-md bg-sky-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-40"
-                title="Previous email (all filtered emails)"
+        <div className="fixed inset-0 z-50 flex max-w-[100vw] flex-col overflow-hidden bg-slate-900/40 backdrop-blur-sm">
+          <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-slate-200 bg-white px-4 py-2.5">
+            <span className="text-sm font-semibold text-slate-800">Comparison</span>
+            <span
+              className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${
+                compareIsScanned
+                  ? 'bg-emerald-100 text-emerald-800'
+                  : extractionStatus === 'pending' || extractionStatus === 'running'
+                    ? 'bg-amber-100 text-amber-800'
+                    : extractionStatus === 'error'
+                      ? 'bg-red-100 text-red-700'
+                      : 'bg-slate-100 text-slate-600'
+              }`}
+            >
+              {compareIsScanned
+                ? 'Scanned'
+                : extractionStatus === 'pending'
+                  ? 'Queued'
+                  : extractionStatus === 'running'
+                    ? 'Scanning…'
+                    : extractionStatus === 'error'
+                      ? 'Scan error'
+                      : 'Not scanned'}
+            </span>
+            {(compareIsSent || compareForward === 'error' || compareIsScanned) && (
+              <span
+                className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${
+                  compareIsSent
+                    ? 'bg-sky-100 text-sky-800'
+                    : compareForward === 'error'
+                      ? 'bg-orange-100 text-orange-800'
+                      : 'bg-slate-100 text-slate-500'
+                }`}
               >
-                ← Prev
-              </button>
-              <span className="min-w-[4.5rem] text-center text-xs font-medium text-zinc-300">
-                {globalEmailIndex >= 0 ? globalEmailIndex + 1 : '—'} / {total}
+                {compareIsSent
+                  ? 'Sent to sheet'
+                  : compareForward === 'error'
+                    ? 'Send failed'
+                    : 'Not sent'}
               </span>
-              <button
-                type="button"
-                disabled={!canCompareNext || busy}
-                onClick={goCompareNext}
-                className="cursor-pointer rounded-md bg-sky-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-40"
-                title="Next email (all filtered emails)"
-              >
-                Next →
-              </button>
-            </div>
+            )}
+            <span className="min-w-0 flex-1 truncate text-xs text-slate-500">
+              {busy ? 'Loading…' : detail.subject}
+            </span>
+            <button
+              type="button"
+              disabled={!canComparePrev || busy}
+              onClick={goComparePrev}
+              className="cursor-pointer rounded-md bg-violet-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-violet-600 disabled:opacity-40"
+            >
+              ← Prev
+            </button>
+            <span className="text-xs tabular-nums text-slate-500">
+              {globalEmailIndex >= 0 ? globalEmailIndex + 1 : '—'} / {total}
+            </span>
+            <button
+              type="button"
+              disabled={!canCompareNext || busy}
+              onClick={goCompareNext}
+              className="cursor-pointer rounded-md bg-indigo-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-600 disabled:opacity-40"
+            >
+              Next →
+            </button>
             <button
               type="button"
               disabled={extractionStatus !== 'completed' || !activeUid || sendingSheet || busy}
               onClick={() => activeUid && sendToSheet([activeUid])}
-              className="cursor-pointer rounded bg-violet-700 px-2.5 py-1 text-[11px] text-white hover:bg-violet-600 disabled:cursor-not-allowed disabled:opacity-40"
+              className="cursor-pointer rounded-md bg-emerald-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-600 disabled:opacity-40"
             >
-              {sendingSheet
-                ? 'Sending…'
-                : detail.forward_status === 'sent' ||
-                    emails.find((e) => e.uid === detail.uid)?.forward_status === 'sent'
-                  ? 'Resend sheet'
-                  : 'Send sheet'}
+              {sendingSheet ? 'Sending…' : compareIsSent ? 'Resend' : 'Send sheet'}
             </button>
             <button
               type="button"
               onClick={() => setCompareOpen(false)}
-              className="cursor-pointer rounded bg-[#333] px-2.5 py-1 text-[11px] text-white hover:bg-[#444]"
+              className="cursor-pointer rounded-md bg-slate-800 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-700"
             >
               Close
             </button>
           </div>
-          <div className="relative grid min-h-0 flex-1 grid-cols-1 md:grid-cols-2">
+          <div className="relative grid min-h-0 min-w-0 flex-1 grid-cols-1 overflow-hidden md:grid-cols-2">
             {busy && (
-              <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-black/50 backdrop-blur-[2px]">
-                <span className="inline-block h-9 w-9 animate-spin rounded-full border-[3px] border-white border-t-transparent" />
-                <div className="rounded-md bg-[#1a1a1a] px-4 py-2 text-sm font-medium text-white shadow-lg">
-                  Loading next email…
-                </div>
+              <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-black/40">
+                <span className="inline-block h-8 w-8 animate-spin rounded-full border-[3px] border-white border-t-transparent" />
               </div>
             )}
-            <div className="flex min-h-0 flex-col border-r border-[#333] bg-white text-zinc-900">
-              <div className="flex items-center gap-2 border-b border-zinc-200 bg-zinc-50 px-4 py-2.5">
-                <div className="min-w-0 flex-1 text-xs font-semibold uppercase text-zinc-600">
-                  Preview (email + PDF / Excel / Word)
-                </div>
-                <button
-                  type="button"
-                  disabled={!canComparePrev || busy}
-                  onClick={goComparePrev}
-                  className="cursor-pointer rounded-md bg-sky-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  ← Prev mail
-                </button>
-                <button
-                  type="button"
-                  disabled={!canCompareNext || busy}
-                  onClick={goCompareNext}
-                  className="cursor-pointer rounded-md bg-sky-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  Next mail →
-                </button>
-              </div>
+            <div className="flex min-h-0 min-w-0 flex-col overflow-hidden border-r border-slate-200 bg-white">
               <AttachmentPreviewPanel
                 detail={detail}
                 showEmailBody
                 bodyHtml={bodyHtml}
               />
             </div>
-            <OffersEditor
-              extractionId={extractionId}
-              offers={offers}
-              status={extractionStatus}
-              error={extractionError}
-              emailDate={
-                (detail.date_iso && String(detail.date_iso).slice(0, 10)) ||
-                detail.date_str ||
-                ''
-              }
-              onSaved={(next) => {
-                setOffers(next)
-                setExtractionStatus('completed')
-                loadEmails()
-              }}
-            />
+            <div className="flex min-h-0 min-w-0 flex-col overflow-hidden">
+              <OffersEditor
+                extractionId={extractionId}
+                offers={offers}
+                status={extractionStatus}
+                error={extractionError}
+                emailDate={
+                  (detail.date_iso && String(detail.date_iso).slice(0, 10)) ||
+                  detail.date_str ||
+                  ''
+                }
+                onSaved={(next) => {
+                  setOffers(next)
+                  setExtractionStatus('completed')
+                  void loadEmails()
+                  void loadFolderCounts()
+                }}
+              />
+            </div>
           </div>
         </div>
       )}
