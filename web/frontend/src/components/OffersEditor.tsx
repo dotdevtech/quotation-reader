@@ -209,40 +209,48 @@ export default function OffersEditor({
   const [priceTypeOpts, setPriceTypeOpts] = useState(DEFAULT_PRICE_TYPE)
   const [currencyOpts, setCurrencyOpts] = useState(DEFAULT_CURRENCY)
   const [certOpts, setCertOpts] = useState(DEFAULT_CERTS)
-  const [draft, setDraft] = useState<Offer[]>(offers)
-  const [shared, setShared] = useState<Offer>({})
+  const initialOffers = offers.length ? offers.map((o) => ({ ...o })) : [{}]
+  const initialShared = pickShared(initialOffers)
+  const [draft, setDraft] = useState<Offer[]>(initialOffers)
+  const [shared, setShared] = useState<Offer>(initialShared)
   /** 'quote' = quote/vendor/terms tab; number = part line index */
   const [panel, setPanel] = useState<'quote' | number>('quote')
   const [msg, setMsg] = useState('')
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
-  const [baseline, setBaseline] = useState('')
-  const prevExtractionIdRef = useRef<number | null>(extractionId)
+  const [baseline, setBaseline] = useState(() =>
+    serializeOffers(applySharedToAll(initialOffers, initialShared)),
+  )
+  // undefined = not synced yet (force first load of quote data)
+  const prevExtractionIdRef = useRef<number | null | undefined>(undefined)
+  const baselineRef = useRef(baseline)
   const dirtyRef = useRef(false)
 
   const isDirty = useMemo(() => {
     return serializeOffers(applySharedToAll(draft, shared)) !== baseline
   }, [draft, shared, baseline])
   dirtyRef.current = isDirty
+  baselineRef.current = baseline
 
   useEffect(() => {
     const next = offers.length ? offers.map((o) => ({ ...o })) : [{}]
     const sharedNext = pickShared(next)
     const serialized = serializeOffers(applySharedToAll(next, sharedNext))
+    const firstLoad = prevExtractionIdRef.current === undefined
     const extractionChanged = prevExtractionIdRef.current !== extractionId
     prevExtractionIdRef.current = extractionId
 
     // Background scan polls refresh `offers` often — don't kick the user off a Part tab
     // or wipe unsaved edits while staying on the same extraction.
-    if (!extractionChanged && dirtyRef.current) return
-    if (!extractionChanged && serialized === baseline) {
-      return
-    }
+    // Always apply on first load so Quote data is not left empty.
+    if (!firstLoad && !extractionChanged && dirtyRef.current) return
+    if (!firstLoad && !extractionChanged && serialized === baselineRef.current) return
 
     setDraft(next)
     setShared(sharedNext)
     setBaseline(serialized)
-    if (extractionChanged) {
+    baselineRef.current = serialized
+    if (firstLoad || extractionChanged) {
       setPanel('quote')
       setMsg('')
     } else {
@@ -252,7 +260,7 @@ export default function OffersEditor({
         return 'quote'
       })
     }
-  }, [offers, extractionId, baseline])
+  }, [offers, extractionId])
   useEffect(() => {
     api
       .masterFields()
