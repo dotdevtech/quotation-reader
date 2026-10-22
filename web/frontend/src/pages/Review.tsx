@@ -16,7 +16,6 @@ export default function Review() {
   const [activeJob, setActiveJob] = useState<Job | null>(null)
   const [activeExtId, setActiveExtId] = useState<number | null>(null)
   const [offers, setOffers] = useState<Offer[]>([])
-  const [status, setStatus] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [emailUid, setEmailUid] = useState<string | null>(null)
   const [emailHtml, setEmailHtml] = useState('')
@@ -31,7 +30,6 @@ export default function Review() {
       if (activeExtId) {
         const ext = fresh.extractions?.find((e) => e.id === activeExtId)
         if (ext) {
-          setStatus(ext.status)
           setError(ext.error)
           setOffers(offersFromResult(ext))
         }
@@ -61,7 +59,6 @@ export default function Review() {
     setActiveExtId(extId)
     setEmailUid(uid)
     const ext = activeJob?.extractions?.find((e) => e.id === extId)
-    setStatus(ext?.status || '')
     setError(ext?.error || null)
     setOffers(offersFromResult(ext as never))
     try {
@@ -74,7 +71,6 @@ export default function Review() {
       const saved = await api.emailExtraction(uid)
       if (saved.offers?.length) setOffers(saved.offers)
       if (saved.id) setActiveExtId(saved.id)
-      setStatus(saved.status)
     } catch (e) {
       setError(String(e))
     }
@@ -149,7 +145,6 @@ export default function Review() {
         <OffersEditor
           extractionId={activeExtId}
           offers={offers}
-          status={status}
           error={error}
           onSaved={setOffers}
         />

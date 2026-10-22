@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { api, type Offer } from '../api'
 
 /** Shown first and largest on Quote data tab. */
@@ -217,20 +217,42 @@ export default function OffersEditor({
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
   const [baseline, setBaseline] = useState('')
-
-  useEffect(() => {
-    const next = offers.length ? offers.map((o) => ({ ...o })) : [{}]
-    const sharedNext = pickShared(next)
-    setDraft(next)
-    setShared(sharedNext)
-    setBaseline(serializeOffers(applySharedToAll(next, sharedNext)))
-    setPanel('quote')
-    setMsg('')
-  }, [offers])
+  const prevExtractionIdRef = useRef<number | null>(extractionId)
+  const dirtyRef = useRef(false)
 
   const isDirty = useMemo(() => {
     return serializeOffers(applySharedToAll(draft, shared)) !== baseline
   }, [draft, shared, baseline])
+  dirtyRef.current = isDirty
+
+  useEffect(() => {
+    const next = offers.length ? offers.map((o) => ({ ...o })) : [{}]
+    const sharedNext = pickShared(next)
+    const serialized = serializeOffers(applySharedToAll(next, sharedNext))
+    const extractionChanged = prevExtractionIdRef.current !== extractionId
+    prevExtractionIdRef.current = extractionId
+
+    // Background scan polls refresh `offers` often — don't kick the user off a Part tab
+    // or wipe unsaved edits while staying on the same extraction.
+    if (!extractionChanged && dirtyRef.current) return
+    if (!extractionChanged && serialized === baseline) {
+      return
+    }
+
+    setDraft(next)
+    setShared(sharedNext)
+    setBaseline(serialized)
+    if (extractionChanged) {
+      setPanel('quote')
+      setMsg('')
+    } else {
+      setPanel((p) => {
+        if (p === 'quote') return p
+        if (typeof p === 'number' && p < next.length) return p
+        return 'quote'
+      })
+    }
+  }, [offers, extractionId, baseline])
   useEffect(() => {
     api
       .masterFields()

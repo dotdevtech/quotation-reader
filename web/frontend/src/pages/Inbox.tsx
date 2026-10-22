@@ -140,6 +140,59 @@ function quoteWorkflow(opts: {
   }
 }
 
+/** Compact tags for the email list (Queued / Scanned / Checked / etc.). */
+function MailListTags({
+  status,
+  error,
+  forwardStatus,
+  quoteChecked,
+}: {
+  status?: string
+  error?: string | null
+  forwardStatus?: string
+  quoteChecked?: boolean | number
+}) {
+  const s = status || 'none'
+  const f = forwardStatus || 'none'
+  const checked = Boolean(quoteChecked)
+
+  let label = 'Quote Received'
+  let cls = 'bg-slate-600 text-white'
+  if (f === 'sent') {
+    label = 'Added'
+    cls = 'bg-sky-600 text-white'
+  } else if (f === 'error') {
+    label = 'Send failed'
+    cls = 'bg-orange-600 text-white'
+  } else if (s === 'pending') {
+    label = 'Queued'
+    cls = 'bg-sky-600 text-white'
+  } else if (s === 'running') {
+    label = 'Scanning'
+    cls = 'bg-amber-600 text-white'
+  } else if (s === 'error') {
+    label = 'Scan error'
+    cls = 'bg-red-600 text-white'
+  } else if (s === 'completed' && checked) {
+    label = 'Checked'
+    cls = 'bg-lime-600 text-white'
+  } else if (s === 'completed') {
+    label = 'Scanned'
+    cls = 'bg-emerald-600 text-white'
+  }
+
+  return (
+    <div className="mt-1 flex flex-wrap gap-1">
+      <span
+        className={`rounded px-1.5 py-0.5 text-[10px] font-bold leading-tight ${cls}`}
+        title={error || label}
+      >
+        {label}
+      </span>
+    </div>
+  )
+}
+
 function WorkflowBadges({
   workflow,
   size = 'md',
@@ -365,28 +418,39 @@ export default function Inbox() {
     return () => clearInterval(t)
   }, [sync?.running, loadEmails, loadFolderCounts])
 
+  // Live status for multi-user: any open inbox refreshes tags (Queued / Scanning / …)
+  // so Computer B sees Computer A’s queue without a manual refresh.
+  const compareOpenRef = useRef(compareOpen)
+  const extractionStatusRef = useRef(extractionStatus)
+  const activeUidRef = useRef(activeUid)
+  compareOpenRef.current = compareOpen
+  extractionStatusRef.current = extractionStatus
+  activeUidRef.current = activeUid
+
   useEffect(() => {
-    const busyAi = emails.some(
-      (e) => e.extraction_status === 'pending' || e.extraction_status === 'running',
-    )
-    if (!busyAi) return
     const t = setInterval(() => {
       void loadEmails()
       void loadFolderCounts()
-      if (activeUid) {
-        api
-          .emailExtraction(activeUid)
-          .then((ext) => {
-            setExtractionId(ext.id ?? null)
-            setExtractionStatus(ext.status || 'none')
-            setExtractionError(ext.error || null)
+      const uid = activeUidRef.current
+      if (!uid) return
+      // Keep Check Quote stable while reviewing a finished scan.
+      if (compareOpenRef.current && extractionStatusRef.current === 'completed') return
+      const prevStatus = extractionStatusRef.current
+      api
+        .emailExtraction(uid)
+        .then((ext) => {
+          const nextStatus = ext.status || 'none'
+          setExtractionId(ext.id ?? null)
+          setExtractionStatus(nextStatus)
+          setExtractionError(ext.error || null)
+          if (nextStatus !== 'completed' || prevStatus !== 'completed') {
             setOffers(ext.offers || [])
-          })
-          .catch(() => undefined)
-      }
-    }, 2500)
+          }
+        })
+        .catch(() => undefined)
+    }, 4000)
     return () => clearInterval(t)
-  }, [emails, activeUid, loadEmails, loadFolderCounts])
+  }, [loadEmails, loadFolderCounts])
 
   const openEmail = async (uid: string, opts?: { keepCompare?: boolean }) => {
     const keepCompare = Boolean(opts?.keepCompare)
@@ -932,6 +996,12 @@ export default function Inbox() {
                       </span>
                       {!!e.has_attachments && <span className="shrink-0 text-red-600">📎</span>}
                     </div>
+                    <MailListTags
+                      status={e.extraction_status}
+                      error={e.extraction_error}
+                      forwardStatus={e.forward_status}
+                      quoteChecked={e.quote_checked}
+                    />
                   </div>
                 </div>
               )
