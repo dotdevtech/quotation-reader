@@ -40,75 +40,154 @@ function shortFrom(from: string) {
   return from.length > 42 ? from.slice(0, 42) + '…' : from
 }
 
-type MailFolder = 'email' | 'scanned' | 'sent'
+type MailFolder = 'email' | 'scanned' | 'checked' | 'sent'
 
 const FOLDER_TABS: { value: MailFolder; label: string; hint: string }[] = [
-  { value: 'email', label: 'Email', hint: 'Not scanned yet' },
-  { value: 'scanned', label: 'Scanned', hint: 'Scanned, not sent to sheet' },
-  { value: 'sent', label: 'Sent', hint: 'Sent to Google Sheet' },
+  { value: 'email', label: 'Quote Received', hint: 'Synced — need to scan' },
+  { value: 'scanned', label: 'Scanned', hint: 'Scanned — waiting Check Quote' },
+  {
+    value: 'checked',
+    label: 'Checked',
+    hint: 'Marked checked — ready to Add to system',
+  },
+  { value: 'sent', label: 'Added to system', hint: 'Sent to Google Sheet' },
 ]
 
-function StatusTag({
-  status,
-  error,
-  forwardStatus,
-}: {
-  status?: string
-  error?: string | null
-  forwardStatus?: string
+const DATE_PRESETS = [
+  { value: '', label: 'Custom dates' },
+  { value: '30', label: 'Last 30 days' },
+  { value: '60', label: 'Last 60 days' },
+  { value: '90', label: 'Last 3 months' },
+  { value: '270', label: 'Last 9 months' },
+] as const
+
+/** Workflow labels: Current status + Todo */
+function quoteWorkflow(opts: {
+  extraction_status?: string
+  forward_status?: string
+  quote_checked?: boolean | number
+  extraction_error?: string | null
 }) {
-  const s = status || 'none'
-  const f = forwardStatus || 'none'
+  const s = opts.extraction_status || 'none'
+  const f = opts.forward_status || 'none'
+  const checked = Boolean(opts.quote_checked)
+  const todoClass = 'bg-amber-500 text-white border border-amber-600 shadow-sm'
+
+  if (f === 'sent') {
+    return {
+      current: 'Added to system',
+      todo: '',
+      currentClass: 'bg-sky-600 text-white border border-sky-700 shadow-sm',
+      todoClass,
+    }
+  }
+  if (f === 'error') {
+    return {
+      current: checked ? 'Checked' : s === 'completed' ? 'Scanned' : 'Quote Received',
+      // Must be checked before Add — if not checked yet, that comes first
+      todo: checked ? 'Add to system (retry)' : 'Mark checked first',
+      currentClass: 'bg-orange-600 text-white border border-orange-700 shadow-sm',
+      todoClass,
+    }
+  }
+  if (s === 'pending') {
+    return {
+      current: 'Quote Received',
+      todo: 'Scan first',
+      currentClass: 'bg-slate-700 text-white border border-slate-800 shadow-sm',
+      todoClass,
+    }
+  }
+  if (s === 'running') {
+    return {
+      current: 'Quote Received',
+      todo: 'Scanning…',
+      currentClass: 'bg-slate-700 text-white border border-slate-800 shadow-sm',
+      todoClass: 'bg-amber-600 text-white border border-amber-700 shadow-sm',
+    }
+  }
+  if (s === 'error') {
+    return {
+      current: 'Quote Received',
+      todo: 'Scan first (fix error)',
+      currentClass: 'bg-red-600 text-white border border-red-700 shadow-sm',
+      todoClass: 'bg-red-500 text-white border border-red-600 shadow-sm',
+      error: opts.extraction_error,
+    }
+  }
+  if (s === 'completed' && checked) {
+    return {
+      current: 'Checked',
+      todo: 'Add to system',
+      currentClass: 'bg-violet-600 text-white border border-violet-700 shadow-sm',
+      todoClass,
+    }
+  }
+  if (s === 'completed') {
+    return {
+      current: 'Scanned',
+      // Scanned but not marked checked — must review & Mark checked before Add
+      todo: 'Mark checked first',
+      currentClass: 'bg-emerald-600 text-white border border-emerald-700 shadow-sm',
+      todoClass,
+    }
+  }
+  return {
+    current: 'Quote Received',
+    todo: 'Scan first',
+    currentClass: 'bg-slate-700 text-white border border-slate-800 shadow-sm',
+    todoClass,
+  }
+}
+
+function WorkflowBadges({
+  workflow,
+  size = 'md',
+  checked,
+  canMarkChecked,
+  onMarkChecked,
+}: {
+  workflow: ReturnType<typeof quoteWorkflow>
+  size?: 'md' | 'lg'
+  checked?: boolean
+  canMarkChecked?: boolean
+  onMarkChecked?: () => void
+}) {
+  const pad = size === 'lg' ? 'px-3 py-1 text-sm' : 'px-2.5 py-1 text-xs'
   return (
-    <div className="flex shrink-0 flex-col items-end gap-1">
-      {s === 'completed' && (
+    <div className="flex flex-wrap items-center gap-2">
+      <span
+        className={`rounded-md font-bold leading-tight ${pad} ${workflow.currentClass}`}
+        title={workflow.error || `Current: ${workflow.current}`}
+      >
+        Current: {workflow.current}
+      </span>
+      {workflow.todo ? (
         <span
-          className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-800"
-          title="Scanned — data saved"
+          className={`rounded-md font-bold leading-tight ${pad} ${workflow.todoClass}`}
+          title={`To do: ${workflow.todo}`}
         >
-          Scanned
+          To do: {workflow.todo}
         </span>
-      )}
-      {s === 'pending' && (
+      ) : null}
+      {checked ? (
         <span
-          className="rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-semibold text-sky-800"
-          title="Queued for scan"
+          className={`rounded-md font-bold leading-tight ${pad} bg-lime-700 text-white border border-lime-800 shadow-sm`}
+          title="Reviewed and marked checked"
         >
-          Queued
+          Checked ✓
         </span>
-      )}
-      {s === 'running' && (
-        <span
-          className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800"
-          title="Scanning in progress"
+      ) : onMarkChecked ? (
+        <button
+          type="button"
+          disabled={!canMarkChecked}
+          onClick={onMarkChecked}
+          className={`cursor-pointer rounded-md font-bold leading-tight ${pad} bg-lime-600 text-white border border-lime-700 shadow-sm hover:bg-lime-500 disabled:cursor-not-allowed disabled:opacity-40`}
+          title={canMarkChecked ? 'Confirm you reviewed this quote' : 'Scan first'}
         >
-          Scanning
-        </span>
-      )}
-      {s === 'error' && (
-        <span
-          className="rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-semibold text-red-700"
-          title={error || 'Scan failed — open email for details'}
-        >
-          Error
-        </span>
-      )}
-      {f === 'sent' && (
-        <span
-          className="rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-semibold text-sky-800"
-          title="Sent to Google Sheet webhook"
-        >
-          Sent
-        </span>
-      )}
-      {f === 'error' && (
-        <span
-          className="rounded bg-orange-100 px-1.5 py-0.5 text-[10px] font-semibold text-orange-800"
-          title="Sheet webhook send failed"
-        >
-          Send failed
-        </span>
-      )}
+          Mark checked
+        </button>
+      ) : null}
     </div>
   )
 }
@@ -127,8 +206,10 @@ export default function Inbox() {
   const [folderCounts, setFolderCounts] = useState<Record<MailFolder, number>>({
     email: 0,
     scanned: 0,
+    checked: 0,
     sent: 0,
   })
+  const [datePreset, setDatePreset] = useState('')
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [activeUid, setActiveUid] = useState<string | null>(null)
   const [detail, setDetail] = useState<EmailDetail | null>(null)
@@ -156,6 +237,17 @@ export default function Inbox() {
     setQDebounced('')
     setDateFrom('')
     setDateTo('')
+    setDatePreset('')
+    setPage(1)
+  }
+
+  const applyDatePreset = (value: string) => {
+    setDatePreset(value)
+    if (!value) return
+    const days = Number(value)
+    if (!Number.isFinite(days) || days <= 0) return
+    setDateFrom(daysAgoISO(days))
+    setDateTo(todayISO())
     setPage(1)
   }
 
@@ -214,7 +306,7 @@ export default function Inbox() {
   const loadFolderCounts = useCallback(async () => {
     try {
       const entries = await Promise.all(
-        (['email', 'scanned', 'sent'] as MailFolder[]).map(async (f) => {
+        (['email', 'scanned', 'checked', 'sent'] as MailFolder[]).map(async (f) => {
           const data = await api.emails({
             q: qDebounced,
             date_from: filterDates.date_from,
@@ -442,16 +534,81 @@ export default function Inbox() {
     }
   }
 
+  const isQuoteChecked = (uid: string) => {
+    if (detail?.uid === uid && detail.quote_checked) return true
+    return Boolean(emails.find((e) => e.uid === uid)?.quote_checked)
+  }
+
+  const markQuoteChecked = async (uidsOverride?: string[]) => {
+    const uids = uidsOverride?.length
+      ? uidsOverride
+      : activeUid && selected.size === 0
+        ? [activeUid]
+        : [...selected]
+    const ready = uids.filter((uid) => {
+      if (uid === activeUid && extractionStatus === 'completed') {
+        const already =
+          Boolean(detail?.quote_checked) ||
+          Boolean(emails.find((x) => x.uid === uid)?.quote_checked)
+        return !already
+      }
+      const e = emails.find((x) => x.uid === uid)
+      return (
+        e?.extraction_status === 'completed' &&
+        !e.quote_checked &&
+        e.forward_status !== 'sent'
+      )
+    })
+    if (ready.length === 0) {
+      setError('Select scanned quotes that are not checked yet.')
+      return
+    }
+    setError('')
+    try {
+      for (const uid of ready) {
+        await api.setQuoteChecked(uid, true)
+      }
+      setEmails((prev) =>
+        prev.map((e) => (ready.includes(e.uid) ? { ...e, quote_checked: true } : e)),
+      )
+      setDetail((prev) =>
+        prev && ready.includes(prev.uid) ? { ...prev, quote_checked: true } : prev,
+      )
+      if (!uidsOverride && selected.size) setSelected(new Set())
+      setJobMsg(
+        ready.length === 1
+          ? 'Marked as checked. You can Add to system now.'
+          : `Marked ${ready.length} quotes as checked.`,
+      )
+      await loadEmails()
+      void loadFolderCounts()
+    } catch (e) {
+      setError(String(e))
+    }
+  }
+
   const sendToSheet = async (uidsOverride?: string[]) => {
     const uids = uidsOverride?.length ? uidsOverride : [...selected]
     if (uids.length === 0 || sendingSheet) return
-    const readyUids = uids.filter((uid) => {
+    const scannedUids = uids.filter((uid) => {
       if (uid === activeUid && extractionStatus === 'completed') return true
       return emails.some((e) => e.uid === uid && e.extraction_status === 'completed')
     })
-    if (readyUids.length === 0) {
-      setError('This email must be Scanned before sending to the sheet.')
+    if (scannedUids.length === 0) {
+      setError('Scan the quote first, then Check Quote and Mark checked before adding to system.')
       return
+    }
+    const readyUids = scannedUids.filter((uid) => isQuoteChecked(uid))
+    if (readyUids.length === 0) {
+      setError(
+        'Only checked quotes can be added to the system. Open Check Quote, review, then click Mark checked.',
+      )
+      return
+    }
+    if (readyUids.length < scannedUids.length) {
+      setJobMsg(
+        `Skipping ${scannedUids.length - readyUids.length} unchecked quote(s). Sending ${readyUids.length}…`,
+      )
     }
     const alreadySent = readyUids.filter((uid) => {
       const fromList = emails.find((e) => e.uid === uid)?.forward_status
@@ -521,6 +678,18 @@ export default function Inbox() {
     'none'
   const compareIsScanned = extractionStatus === 'completed'
   const compareIsSent = compareForward === 'sent'
+  const compareChecked = Boolean(
+    detail?.quote_checked ||
+      (detail ? emails.find((e) => e.uid === detail.uid)?.quote_checked : false),
+  )
+  const compareWorkflow = quoteWorkflow({
+    extraction_status: extractionStatus,
+    forward_status: compareForward,
+    quote_checked: compareChecked,
+    extraction_error: extractionError,
+  })
+  const canAddToSystem =
+    compareIsScanned && compareChecked && Boolean(activeUid) && !sendingSheet && !busy
 
   return (
     <div className="flex h-full max-w-[100vw] flex-col overflow-x-hidden">
@@ -536,11 +705,14 @@ export default function Inbox() {
         }
       />
 
-      <div className="flex flex-wrap items-center gap-2 border-b border-sky-200/80 bg-gradient-to-r from-sky-50 via-white to-emerald-50 px-3 py-2.5">
+      <div className="flex flex-wrap items-center gap-2 border-b border-sky-200/80 bg-gradient-to-r from-sky-50 via-white to-emerald-50 px-3 py-2">
         <input
           type="date"
           value={dateFrom}
-          onChange={(e) => setDateFrom(e.target.value)}
+          onChange={(e) => {
+            setDateFrom(e.target.value)
+            setDatePreset('')
+          }}
           title="From date"
           className="cursor-pointer rounded border border-sky-200 bg-white px-1.5 py-1 text-xs text-slate-900"
         />
@@ -548,36 +720,30 @@ export default function Inbox() {
         <input
           type="date"
           value={dateTo}
-          onChange={(e) => setDateTo(e.target.value)}
+          onChange={(e) => {
+            setDateTo(e.target.value)
+            setDatePreset('')
+          }}
           title="To date"
           className="cursor-pointer rounded border border-sky-200 bg-white px-1.5 py-1 text-xs text-slate-900"
         />
-        <div className="flex gap-1">
-          {(
-            [
-              ['30d', 30, 'bg-sky-600 hover:bg-sky-500 text-white'],
-              ['3mo', 90, 'bg-violet-600 hover:bg-violet-500 text-white'],
-              ['9mo', 270, 'bg-orange-600 hover:bg-orange-500 text-white'],
-            ] as const
-          ).map(([label, days, cls]) => (
-            <button
-              key={label}
-              type="button"
-              onClick={() => {
-                setDateFrom(daysAgoISO(days))
-                setDateTo(todayISO())
-              }}
-              className={`cursor-pointer rounded px-2 py-1 text-[11px] font-semibold shadow-sm ${cls}`}
-            >
-              {label}
-            </button>
+        <select
+          value={datePreset}
+          onChange={(e) => applyDatePreset(e.target.value)}
+          title="Quick date range"
+          className="cursor-pointer rounded border border-sky-300 bg-white px-2 py-1 text-[11px] font-semibold text-slate-800"
+        >
+          {DATE_PRESETS.map((p) => (
+            <option key={p.value || 'custom'} value={p.value}>
+              {p.label}
+            </option>
           ))}
-        </div>
+        </select>
         <button
           type="button"
           onClick={clearFilters}
           disabled={!filtersActive}
-          className="cursor-pointer rounded bg-slate-500 px-2 py-1 text-[11px] font-semibold text-white hover:bg-slate-400 disabled:opacity-40"
+          className="cursor-pointer rounded bg-rose-600 px-2.5 py-1 text-[11px] font-bold text-white shadow-sm hover:bg-rose-500 disabled:cursor-not-allowed disabled:opacity-40"
         >
           Clear
         </button>
@@ -588,12 +754,6 @@ export default function Inbox() {
         >
           Refresh
         </button>
-        <Link
-          to="/sync"
-          className="cursor-pointer rounded bg-sky-700 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-sky-600"
-        >
-          Sync
-        </Link>
         {sync?.running && (
           <span className="text-[11px] text-amber-700">
             Syncing… {sync.done}/{sync.total}
@@ -622,49 +782,58 @@ export default function Inbox() {
 
       <div className="grid min-h-0 min-w-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-2">
         <section className="flex min-h-0 min-w-0 flex-col overflow-hidden border-r border-slate-200 bg-white/90">
-          <div className="grid grid-cols-3 gap-1 border-b border-slate-200 bg-white p-1.5">
+          <div className="grid grid-cols-4 gap-1 border-b border-slate-200 bg-white px-1 py-1">
             {FOLDER_TABS.map((t) => {
               const active = folder === t.value
               const count = folderCounts[t.value]
               const styles =
                 t.value === 'email'
                   ? {
-                      active: 'bg-red-700 text-white shadow-md ring-2 ring-red-300',
+                      active: 'bg-red-700 text-white shadow-sm ring-1 ring-red-300',
                       idle: 'bg-red-100 text-red-800 hover:bg-red-200',
                       badgeActive: 'bg-white text-red-700',
                       badgeIdle: 'bg-red-700 text-white',
                     }
                   : t.value === 'scanned'
                     ? {
-                        active: 'bg-emerald-700 text-white shadow-md ring-2 ring-emerald-300',
+                        active: 'bg-emerald-700 text-white shadow-sm ring-1 ring-emerald-300',
                         idle: 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200',
                         badgeActive: 'bg-white text-emerald-700',
                         badgeIdle: 'bg-emerald-700 text-white',
                       }
-                    : {
-                        active: 'bg-sky-700 text-white shadow-md ring-2 ring-sky-300',
-                        idle: 'bg-sky-100 text-sky-800 hover:bg-sky-200',
-                        badgeActive: 'bg-white text-sky-700',
-                        badgeIdle: 'bg-sky-700 text-white',
-                      }
+                    : t.value === 'checked'
+                      ? {
+                          active: 'bg-lime-700 text-white shadow-sm ring-1 ring-lime-300',
+                          idle: 'bg-lime-100 text-lime-900 hover:bg-lime-200',
+                          badgeActive: 'bg-white text-lime-700',
+                          badgeIdle: 'bg-lime-700 text-white',
+                        }
+                      : {
+                          active: 'bg-sky-700 text-white shadow-sm ring-1 ring-sky-300',
+                          idle: 'bg-sky-100 text-sky-800 hover:bg-sky-200',
+                          badgeActive: 'bg-white text-sky-700',
+                          badgeIdle: 'bg-sky-700 text-white',
+                        }
               return (
                 <button
                   key={t.value}
                   type="button"
                   title={t.hint}
                   onClick={() => switchFolder(t.value)}
-                  className={`cursor-pointer rounded-lg px-2 py-2.5 text-center transition-colors ${
+                  className={`flex cursor-pointer items-center justify-center gap-1 rounded-md px-1.5 py-1 text-center transition-colors ${
                     active ? styles.active : styles.idle
                   }`}
                 >
-                  <div className="text-xs font-bold tracking-wide">{t.label}</div>
-                  <div
-                    className={`mt-1 inline-block min-w-[1.75rem] rounded-full px-2 py-0.5 text-[11px] font-semibold tabular-nums ${
+                  <span className="truncate text-[11px] font-bold leading-tight tracking-wide">
+                    {t.label}
+                  </span>
+                  <span
+                    className={`inline-block shrink-0 rounded-full px-1.5 py-px text-[10px] font-semibold leading-tight tabular-nums ${
                       active ? styles.badgeActive : styles.badgeIdle
                     }`}
                   >
                     {count.toLocaleString()}
-                  </div>
+                  </span>
                 </button>
               )
             })}
@@ -715,9 +884,10 @@ export default function Inbox() {
           <div className="min-h-0 flex-1 overflow-y-auto">
             {emails.length === 0 && (
               <div className="p-8 text-center text-sm text-slate-500">
-                {folder === 'email' && 'No unscanned emails here.'}
-                {folder === 'scanned' && 'No scanned quotations waiting to send.'}
-                {folder === 'sent' && 'Nothing sent to Google Sheet yet.'}
+                {folder === 'email' && 'No Quote Received emails waiting to scan.'}
+                {folder === 'scanned' && 'No scanned quotes waiting to be checked.'}
+                {folder === 'checked' && 'No checked quotes waiting to Add to system.'}
+                {folder === 'sent' && 'Nothing added to the system yet.'}
                 {filtersActive && ' Try clearing search/date filters.'}{' '}
                 {folder === 'email' && (
                   <>
@@ -754,14 +924,7 @@ export default function Inbox() {
                       >
                         {shortFrom(e.from_addr)}
                       </span>
-                      <div className="flex shrink-0 flex-col items-end gap-1">
-                        <span className="text-xs text-slate-500">{e.date_str}</span>
-                        <StatusTag
-                          status={e.extraction_status}
-                          error={e.extraction_error}
-                          forwardStatus={e.forward_status}
-                        />
-                      </div>
+                      <span className="shrink-0 text-xs text-slate-500">{e.date_str}</span>
                     </div>
                     <div className="mt-0.5 flex items-center gap-2">
                       <span className="truncate text-sm text-slate-600">
@@ -797,7 +960,7 @@ export default function Inbox() {
             </button>
           </div>
 
-          <div className="grid grid-cols-3 gap-1.5 border-t border-rose-200 bg-gradient-to-r from-rose-50 to-sky-50 px-2 py-2">
+          <div className="grid grid-cols-2 gap-1.5 border-t border-rose-200 bg-gradient-to-r from-rose-50 to-sky-50 px-2 py-2 sm:grid-cols-4">
             <button
               type="button"
               disabled={selected.size === 0}
@@ -819,17 +982,42 @@ export default function Inbox() {
             <button
               type="button"
               disabled={
+                selected.size === 0 ||
+                ![...selected].some((uid) =>
+                  emails.some(
+                    (e) =>
+                      e.uid === uid &&
+                      e.extraction_status === 'completed' &&
+                      !e.quote_checked &&
+                      e.forward_status !== 'sent',
+                  ),
+                )
+              }
+              onClick={() => void markQuoteChecked([...selected])}
+              className="cursor-pointer rounded bg-lime-600 px-1 py-1.5 text-[11px] font-semibold text-white shadow-sm hover:bg-lime-500 disabled:cursor-not-allowed disabled:opacity-40"
+              title="Mark selected scanned quotes as checked"
+            >
+              Mark{selected.size ? ` (${selected.size})` : ''}
+            </button>
+            <button
+              type="button"
+              disabled={
                 sendingSheet ||
                 selected.size === 0 ||
                 ![...selected].some((uid) =>
-                  emails.some((e) => e.uid === uid && e.extraction_status === 'completed'),
+                  emails.some(
+                    (e) =>
+                      e.uid === uid &&
+                      e.extraction_status === 'completed' &&
+                      Boolean(e.quote_checked),
+                  ),
                 )
               }
               onClick={() => sendToSheet()}
               className="cursor-pointer rounded bg-sky-700 px-1 py-1.5 text-[11px] font-semibold text-white shadow-sm hover:bg-sky-600 disabled:cursor-not-allowed disabled:opacity-40"
-              title="Send selected to Google Sheet"
+              title="Add checked quotes to system (Google Sheet)"
             >
-              {sendingSheet ? 'Sending…' : 'Sheet'}
+              {sendingSheet ? 'Sending…' : 'Add'}
             </button>
           </div>
         </section>
@@ -851,6 +1039,19 @@ export default function Inbox() {
                       <span className="mx-1 text-slate-600">·</span>
                       {detail.date_str}
                     </p>
+                    <div className="mt-2">
+                      <WorkflowBadges
+                        workflow={compareWorkflow}
+                        size="lg"
+                        checked={compareChecked || compareIsSent}
+                        canMarkChecked={
+                          compareIsScanned && !compareChecked && !compareIsSent && !busy
+                        }
+                        onMarkChecked={() =>
+                          void markQuoteChecked(activeUid ? [activeUid] : [])
+                        }
+                      />
+                    </div>
                   </div>
                   <div className="flex shrink-0 gap-1.5">
                     <button
@@ -858,25 +1059,28 @@ export default function Inbox() {
                       onClick={() => setCompareOpen(true)}
                       className="cursor-pointer rounded bg-red-700 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-red-600"
                     >
-                      Compare
+                      Check Quote
                     </button>
                     <button
                       type="button"
-                      disabled={extractionStatus !== 'completed' || !activeUid || sendingSheet}
+                      disabled={!canAddToSystem}
                       onClick={() => activeUid && sendToSheet([activeUid])}
                       className="cursor-pointer rounded bg-sky-600 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-40"
                       title={
-                        extractionStatus === 'completed'
-                          ? 'Send this email’s scanned offers to Google Sheet'
-                          : 'Scan this email first (must be Scanned)'
+                        compareIsSent
+                          ? 'Already added — click to resend'
+                          : !compareIsScanned
+                            ? 'Scan first, then Check Quote and Mark checked'
+                            : !compareChecked
+                              ? 'Open Check Quote and Mark checked before adding'
+                              : 'Add this quote to the system (Google Sheet)'
                       }
                     >
                       {sendingSheet
                         ? '…'
-                        : detail.forward_status === 'sent' ||
-                            emails.find((e) => e.uid === detail.uid)?.forward_status === 'sent'
-                          ? 'Resend sheet'
-                          : 'Send sheet'}
+                        : compareIsSent
+                          ? 'Resend'
+                          : 'Add to system'}
                     </button>
                   </div>
                 </div>
@@ -988,45 +1192,16 @@ export default function Inbox() {
       {compareOpen && detail && (
         <div className="fixed inset-0 z-50 flex max-w-[100vw] flex-col overflow-hidden bg-slate-900/40 backdrop-blur-sm">
           <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-slate-200 bg-white px-4 py-2.5">
-            <span className="text-sm font-semibold text-slate-800">Comparison</span>
-            <span
-              className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${
-                compareIsScanned
-                  ? 'bg-emerald-100 text-emerald-800'
-                  : extractionStatus === 'pending' || extractionStatus === 'running'
-                    ? 'bg-amber-100 text-amber-800'
-                    : extractionStatus === 'error'
-                      ? 'bg-red-100 text-red-700'
-                      : 'bg-slate-100 text-slate-600'
-              }`}
-            >
-              {compareIsScanned
-                ? 'Scanned'
-                : extractionStatus === 'pending'
-                  ? 'Queued'
-                  : extractionStatus === 'running'
-                    ? 'Scanning…'
-                    : extractionStatus === 'error'
-                      ? 'Scan error'
-                      : 'Not scanned'}
-            </span>
-            {(compareIsSent || compareForward === 'error' || compareIsScanned) && (
-              <span
-                className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${
-                  compareIsSent
-                    ? 'bg-sky-100 text-sky-800'
-                    : compareForward === 'error'
-                      ? 'bg-orange-100 text-orange-800'
-                      : 'bg-slate-100 text-slate-500'
-                }`}
-              >
-                {compareIsSent
-                  ? 'Sent to sheet'
-                  : compareForward === 'error'
-                    ? 'Send failed'
-                    : 'Not sent'}
-              </span>
-            )}
+            <span className="text-sm font-semibold text-slate-800">Check Quote</span>
+            <WorkflowBadges
+              workflow={compareWorkflow}
+              size="lg"
+              checked={compareChecked || compareIsSent}
+              canMarkChecked={
+                compareIsScanned && !compareChecked && !compareIsSent && !busy && Boolean(activeUid)
+              }
+              onMarkChecked={() => void markQuoteChecked(activeUid ? [activeUid] : [])}
+            />
             <span className="min-w-0 flex-1 truncate text-xs text-slate-500">
               {busy ? 'Loading…' : detail.subject}
             </span>
@@ -1051,11 +1226,22 @@ export default function Inbox() {
             </button>
             <button
               type="button"
-              disabled={extractionStatus !== 'completed' || !activeUid || sendingSheet || busy}
+              disabled={!canAddToSystem}
               onClick={() => activeUid && sendToSheet([activeUid])}
               className="cursor-pointer rounded-md bg-emerald-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-600 disabled:opacity-40"
+              title={
+                !compareChecked
+                  ? 'Mark checked first'
+                  : compareIsSent
+                    ? 'Resend to Google Sheet'
+                    : 'Add to system (Google Sheet)'
+              }
             >
-              {sendingSheet ? 'Sending…' : compareIsSent ? 'Resend' : 'Send sheet'}
+              {sendingSheet
+                ? 'Sending…'
+                : compareIsSent
+                  ? 'Resend'
+                  : 'Add to system'}
             </button>
             <button
               type="button"
@@ -1082,7 +1268,6 @@ export default function Inbox() {
               <OffersEditor
                 extractionId={extractionId}
                 offers={offers}
-                status={extractionStatus}
                 error={extractionError}
                 emailDate={
                   (detail.date_iso && String(detail.date_iso).slice(0, 10)) ||

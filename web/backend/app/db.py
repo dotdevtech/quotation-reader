@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -63,6 +64,11 @@ CREATE TABLE IF NOT EXISTS app_settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS sessions (
+    token TEXT PRIMARY KEY,
+    expires_at REAL NOT NULL
+);
 """
 
 
@@ -91,6 +97,18 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE emails ADD COLUMN forward_status TEXT NOT NULL DEFAULT 'none'"
         )
+    if "quote_checked" not in cols:
+        conn.execute(
+            "ALTER TABLE emails ADD COLUMN quote_checked INTEGER NOT NULL DEFAULT 0"
+        )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sessions (
+            token TEXT PRIMARY KEY,
+            expires_at REAL NOT NULL
+        )
+        """
+    )
 
 
 def get_app_setting(key: str) -> Optional[str]:
@@ -239,13 +257,21 @@ def list_emails(
             clauses.append("(date_iso IS NOT NULL AND substr(date_iso, 1, 10) <= ?)")
             params.append(day_to)
     folder_key = (folder or "").strip().lower()
-    if folder_key in ("email", "scanned", "sent"):
-        # email = not scanned yet (and not sent); scanned = scanned but not sent; sent = sheet sent
+    if folder_key in ("email", "scanned", "checked", "sent"):
+        # email = Quote Received (not scanned)
+        # scanned = scanned, not checked, not sent
+        # checked = reviewed/checked, waiting to add to system
+        # sent = Added to system
         if folder_key == "email":
             clauses.append("COALESCE(extraction_status, 'none') != 'completed'")
             clauses.append("COALESCE(forward_status, 'none') != 'sent'")
         elif folder_key == "scanned":
             clauses.append("COALESCE(extraction_status, 'none') = 'completed'")
+            clauses.append("COALESCE(quote_checked, 0) = 0")
+            clauses.append("COALESCE(forward_status, 'none') != 'sent'")
+        elif folder_key == "checked":
+            clauses.append("COALESCE(extraction_status, 'none') = 'completed'")
+            clauses.append("COALESCE(quote_checked, 0) = 1")
             clauses.append("COALESCE(forward_status, 'none') != 'sent'")
         else:
             clauses.append("COALESCE(forward_status, 'none') = 'sent'")
@@ -268,6 +294,7 @@ def list_emails(
                    has_attachments, synced_at,
                    COALESCE(extraction_status, 'none') AS extraction_status,
                    COALESCE(forward_status, 'none') AS forward_status,
+                   COALESCE(quote_checked, 0) AS quote_checked,
                    latest_extraction_id,
                    CASE WHEN body_text IS NOT NULL OR body_html IS NOT NULL THEN 1 ELSE 0 END AS body_loaded,
                    (
@@ -287,7 +314,12 @@ def list_emails(
             """,
             [*params, limit, offset],
         ).fetchall()
-        return [dict(r) for r in rows], int(total)
+        items = []
+        for r in rows:
+            d = dict(r)
+            d["quote_checked"] = bool(d.get("quote_checked"))
+            items.append(d)
+        return items, int(total)
 
 
 def set_email_forward_status(uid: str, status: str) -> None:
@@ -295,6 +327,24 @@ def set_email_forward_status(uid: str, status: str) -> None:
         conn.execute(
             "UPDATE emails SET forward_status = ? WHERE uid = ?",
             (status, uid),
+        )
+        conn.commit()
+
+
+def is_email_quote_checked(uid: str) -> bool:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT COALESCE(quote_checked, 0) AS c FROM emails WHERE uid = ?",
+            (uid,),
+        ).fetchone()
+        return bool(row and row["c"])
+
+
+def set_email_quote_checked(uid: str, checked: bool) -> None:
+    with connect() as conn:
+        conn.execute(
+            "UPDATE emails SET quote_checked = ? WHERE uid = ?",
+            (1 if checked else 0, uid),
         )
         conn.commit()
 
@@ -311,21 +361,43 @@ def get_email_extraction_status(uid: str) -> str:
 def set_email_extraction_status(
     uid: str, status: str, extraction_id: Optional[int] = None
 ) -> None:
+    # Re-scan / queue resets review — must Check Quote again before Add to system.
+    reset_checked = status in ("pending", "running", "none", "error")
     with connect() as conn:
         if extraction_id is not None:
-            conn.execute(
-                """
-                UPDATE emails
-                SET extraction_status = ?, latest_extraction_id = ?
-                WHERE uid = ?
-                """,
-                (status, extraction_id, uid),
-            )
+            if reset_checked:
+                conn.execute(
+                    """
+                    UPDATE emails
+                    SET extraction_status = ?, latest_extraction_id = ?, quote_checked = 0
+                    WHERE uid = ?
+                    """,
+                    (status, extraction_id, uid),
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE emails
+                    SET extraction_status = ?, latest_extraction_id = ?
+                    WHERE uid = ?
+                    """,
+                    (status, extraction_id, uid),
+                )
         else:
-            conn.execute(
-                "UPDATE emails SET extraction_status = ? WHERE uid = ?",
-                (status, uid),
-            )
+            if reset_checked:
+                conn.execute(
+                    """
+                    UPDATE emails
+                    SET extraction_status = ?, quote_checked = 0
+                    WHERE uid = ?
+                    """,
+                    (status, uid),
+                )
+            else:
+                conn.execute(
+                    "UPDATE emails SET extraction_status = ? WHERE uid = ?",
+                    (status, uid),
+                )
         conn.commit()
 
 
@@ -488,9 +560,66 @@ def save_extraction_result_edit(extraction_id: int, result: dict[str, Any]) -> N
         conn.commit()
 
 
+def purge_expired_sessions() -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM sessions WHERE expires_at < ?", (time.time(),))
+        conn.commit()
+
+
+def create_session_row(token: str, expires_at: float) -> None:
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO sessions(token, expires_at) VALUES(?, ?)
+            ON CONFLICT(token) DO UPDATE SET expires_at=excluded.expires_at
+            """,
+            (token, expires_at),
+        )
+        conn.commit()
+
+
+def delete_session_row(token: str) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
+        conn.commit()
+
+
+def get_session_expiry(token: str) -> Optional[float]:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT expires_at FROM sessions WHERE token = ?",
+            (token,),
+        ).fetchone()
+        if not row:
+            return None
+        return float(row["expires_at"])
+
+
+def touch_session_row(token: str, expires_at: float) -> bool:
+    """Extend session if it exists and is not expired. Returns True if valid."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT expires_at FROM sessions WHERE token = ?",
+            (token,),
+        ).fetchone()
+        if not row:
+            return False
+        if float(row["expires_at"]) < time.time():
+            conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
+            conn.commit()
+            return False
+        conn.execute(
+            "UPDATE sessions SET expires_at = ? WHERE token = ?",
+            (expires_at, token),
+        )
+        conn.commit()
+        return True
+
+
 def _email_row(row: sqlite3.Row) -> dict[str, Any]:
     d = dict(row)
     d["has_attachments"] = bool(d.get("has_attachments"))
+    d["quote_checked"] = bool(d.get("quote_checked"))
     d["attachments"] = json.loads(d.get("attachments_json") or "[]")
     d.pop("attachments_json", None)
     return d

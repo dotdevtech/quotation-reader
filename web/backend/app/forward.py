@@ -273,6 +273,10 @@ def forward_extraction(extraction_id: int, webhook_url: Optional[str] = None) ->
         raise RuntimeError("Extraction not found")
     if ext.get("status") != "completed" or not ext.get("result"):
         raise RuntimeError("Extraction is not completed — extract with OpenAI first")
+    if not db.is_email_quote_checked(ext["email_uid"]):
+        raise RuntimeError(
+            "Quote must be checked first. Open Check Quote, review the data, then click Mark checked."
+        )
 
     offers = (ext["result"] or {}).get("offers") or []
     if not isinstance(offers, list) or not offers:

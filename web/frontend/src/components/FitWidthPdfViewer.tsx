@@ -24,83 +24,84 @@ export default function FitWidthPdfViewer({
 }: Props) {
   const hostRef = useRef<HTMLDivElement>(null)
   const pagesRef = useRef<HTMLDivElement>(null)
+  const pdfDocRef = useRef<pdfjs.PDFDocumentProxy | null>(null)
+  const renderGenRef = useRef(0)
+  const zoomRef = useRef(zoom)
+  zoomRef.current = zoom
+
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
   const [pageCount, setPageCount] = useState(0)
+  const [docReady, setDocReady] = useState(0)
 
-  useEffect(() => {
+  const renderAll = async (doc: pdfjs.PDFDocumentProxy) => {
     const host = hostRef.current
     const pagesEl = pagesRef.current
-    if (!host || !pagesEl || !src) return
+    if (!host || !pagesEl) return
+    const gen = ++renderGenRef.current
+    const z = Math.max(0.4, zoomRef.current)
+    const dpr = Math.min(window.devicePixelRatio || 1, 2)
+    const paneW = Math.max(120, host.clientWidth - 16)
+    pagesEl.replaceChildren()
+
+    for (let n = 1; n <= doc.numPages; n++) {
+      if (gen !== renderGenRef.current) return
+      const page = await doc.getPage(n)
+      if (gen !== renderGenRef.current) {
+        page.cleanup()
+        return
+      }
+      const unscaled = page.getViewport({ scale: 1 })
+      const fitScale = paneW / unscaled.width
+      const displayW = Math.floor(unscaled.width * fitScale * z)
+      const scale = fitScale * z * dpr
+      const viewport = page.getViewport({ scale })
+      const canvas = document.createElement('canvas')
+      canvas.width = Math.floor(viewport.width)
+      canvas.height = Math.floor(viewport.height)
+      canvas.style.width = `${displayW}px`
+      canvas.style.maxWidth = z > 1 ? 'none' : '100%'
+      canvas.style.height = 'auto'
+      canvas.style.display = 'block'
+      canvas.style.margin = '0 auto 12px'
+      canvas.style.background = '#fff'
+      canvas.style.boxShadow = '0 1px 4px rgba(0,0,0,0.12)'
+      pagesEl.appendChild(canvas)
+
+      const ctx = canvas.getContext('2d')
+      if (!ctx) {
+        page.cleanup()
+        continue
+      }
+      await page.render({ canvasContext: ctx, viewport }).promise
+      page.cleanup()
+    }
+  }
+
+  // Load PDF document once per src (do not reload on zoom).
+  useEffect(() => {
+    const pagesEl = pagesRef.current
+    if (!src) return
 
     let cancelled = false
-    let pdfDoc: pdfjs.PDFDocumentProxy | null = null
-    let resizeObs: ResizeObserver | null = null
-    let renderGen = 0
-    let resizeTimer: ReturnType<typeof setTimeout> | null = null
-
-    const renderAll = async (doc: pdfjs.PDFDocumentProxy) => {
-      const gen = ++renderGen
-      const z = Math.max(0.4, zoom)
-      const dpr = Math.min(window.devicePixelRatio || 1, 2)
-      const paneW = Math.max(120, host.clientWidth - 16)
-      pagesEl.replaceChildren()
-
-      for (let n = 1; n <= doc.numPages; n++) {
-        if (cancelled || gen !== renderGen) return
-        const page = await doc.getPage(n)
-        if (cancelled || gen !== renderGen) {
-          page.cleanup()
-          return
-        }
-        const unscaled = page.getViewport({ scale: 1 })
-        const fitScale = paneW / unscaled.width
-        const displayW = Math.floor(unscaled.width * fitScale * z)
-        const scale = fitScale * z * dpr
-        const viewport = page.getViewport({ scale })
-        const canvas = document.createElement('canvas')
-        canvas.width = Math.floor(viewport.width)
-        canvas.height = Math.floor(viewport.height)
-        canvas.style.width = `${displayW}px`
-        canvas.style.maxWidth = z > 1 ? 'none' : '100%'
-        canvas.style.height = 'auto'
-        canvas.style.display = 'block'
-        canvas.style.margin = '0 auto 12px'
-        canvas.style.background = '#fff'
-        canvas.style.boxShadow = '0 1px 4px rgba(0,0,0,0.12)'
-        pagesEl.appendChild(canvas)
-
-        const ctx = canvas.getContext('2d')
-        if (!ctx) {
-          page.cleanup()
-          continue
-        }
-        await page.render({ canvasContext: ctx, viewport }).promise
-        page.cleanup()
-      }
-    }
+    setLoading(true)
+    setError('')
+    setPageCount(0)
 
     ;(async () => {
-      setLoading(true)
-      setError('')
       try {
-        pdfDoc = await pdfjs.getDocument({ url: src }).promise
+        const doc = await pdfjs.getDocument({ url: src }).promise
         if (cancelled) {
-          await pdfDoc.destroy()
+          await doc.destroy()
           return
         }
-        setPageCount(pdfDoc.numPages)
-        await renderAll(pdfDoc)
-        if (!cancelled) setLoading(false)
-
-        resizeObs = new ResizeObserver(() => {
-          if (!pdfDoc) return
-          if (resizeTimer) clearTimeout(resizeTimer)
-          resizeTimer = setTimeout(() => {
-            if (pdfDoc) void renderAll(pdfDoc)
-          }, 120)
-        })
-        resizeObs.observe(host)
+        pdfDocRef.current = doc
+        setPageCount(doc.numPages)
+        await renderAll(doc)
+        if (!cancelled) {
+          setLoading(false)
+          setDocReady((n) => n + 1)
+        }
       } catch (e) {
         if (!cancelled) {
           setError(String(e))
@@ -111,13 +112,38 @@ export default function FitWidthPdfViewer({
 
     return () => {
       cancelled = true
-      renderGen += 1
-      if (resizeTimer) clearTimeout(resizeTimer)
-      resizeObs?.disconnect()
-      pagesEl.replaceChildren()
-      void pdfDoc?.destroy()
+      renderGenRef.current += 1
+      pagesEl?.replaceChildren()
+      const doc = pdfDocRef.current
+      pdfDocRef.current = null
+      void doc?.destroy()
     }
-  }, [src, zoom])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- zoom handled separately
+  }, [src])
+
+  // Re-draw canvases on zoom / resize without destroying the loaded PDF.
+  useEffect(() => {
+    const host = hostRef.current
+    const doc = pdfDocRef.current
+    if (!host || !doc || loading) return
+
+    let resizeTimer: ReturnType<typeof setTimeout> | null = null
+    void renderAll(doc)
+
+    const resizeObs = new ResizeObserver(() => {
+      if (resizeTimer) clearTimeout(resizeTimer)
+      resizeTimer = setTimeout(() => {
+        if (pdfDocRef.current) void renderAll(pdfDocRef.current)
+      }, 120)
+    })
+    resizeObs.observe(host)
+
+    return () => {
+      if (resizeTimer) clearTimeout(resizeTimer)
+      resizeObs.disconnect()
+    }
+    // docReady bumps after initial load so this effect can attach ResizeObserver
+  }, [zoom, loading, docReady])
 
   const scrollCls =
     scroll === 'parent'

@@ -82,6 +82,8 @@ export type EmailSummary = {
   extraction_error?: string | null
   forward_status?: string
   extraction_forwarded?: number | boolean
+  /** Reviewed in Check Quote — required before Add to system */
+  quote_checked?: boolean | number
 }
 
 export type EmailDetail = EmailSummary & {
@@ -133,7 +135,8 @@ export type Job = {
 export const PAGE_SIZE = 50
 
 export const api = {
-  authStatus: () => request<{ setup_required: boolean; ok: boolean }>('/api/auth/status'),
+  authStatus: () =>
+    request<{ setup_required: boolean; ok: boolean; logged_in?: boolean }>('/api/auth/status'),
   setup: (password: string) =>
     request<{ ok: boolean; token: string }>('/api/auth/setup', {
       method: 'POST',
@@ -200,8 +203,8 @@ export const api = {
     date_to?: string
     extraction_status?: string
     forward_status?: string
-    /** email = untouched; scanned = scanned not sent; sent = sent to sheet */
-    folder?: 'email' | 'scanned' | 'sent'
+    /** email | scanned (unchecked) | checked (ready to add) | sent */
+    folder?: 'email' | 'scanned' | 'checked' | 'sent'
     limit?: number
     offset?: number
   }) => {
@@ -271,6 +274,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ email_uids }),
     }),
+  setQuoteChecked: (uid: string, checked = true) =>
+    request<{ ok: boolean; uid: string; quote_checked: boolean }>(
+      `/api/emails/${encodeURIComponent(uid)}/quote-check`,
+      { method: 'POST', body: JSON.stringify({ checked }) },
+    ),
   exportUrl: (id: number) => `/api/extractions/${id}/download`,
   attachmentUrl: (emailUid: string, index: number, inline = true) => {
     const token = getToken()

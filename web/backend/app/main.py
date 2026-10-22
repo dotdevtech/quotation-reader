@@ -6,7 +6,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 from . import db
 from .attachments import clear_all_attachment_files
-from .auth import create_session, destroy_session, require_auth, validate_login
+from .auth import create_session, destroy_session, require_auth, session_valid, validate_login
 from .config import get_settings
 from .forward import export_extraction, forward_emails, forward_extraction
 from .imap_sync import (
@@ -74,11 +74,15 @@ def on_startup() -> None:
 
 
 @app.get("/api/auth/status")
-def auth_status() -> dict[str, Any]:
+def auth_status(
+    x_session_token: Optional[str] = Header(default=None, alias="X-Session-Token"),
+) -> dict[str, Any]:
     s = get_app_settings()
+    logged_in = session_valid(x_session_token, touch=True)
     return {
         "setup_required": s.setup_required,
         "ok": True,
+        "logged_in": logged_in,
     }
 
 
@@ -264,6 +268,25 @@ def email_detail(uid: str) -> dict[str, Any]:
     if not detail:
         raise HTTPException(status_code=404, detail="Email not found")
     return detail
+
+
+class QuoteCheckRequest(BaseModel):
+    checked: bool = True
+
+
+@app.post("/api/emails/{uid}/quote-check", dependencies=[Depends(require_auth)])
+def set_quote_check(uid: str, body: QuoteCheckRequest = QuoteCheckRequest()) -> dict[str, Any]:
+    """Mark a scanned quote as reviewed (required before Add to system / Send sheet)."""
+    email = db.get_email(uid)
+    if not email:
+        raise HTTPException(status_code=404, detail="Email not found")
+    if (email.get("extraction_status") or "none") != "completed":
+        raise HTTPException(
+            status_code=400,
+            detail="Scan the quote first before marking it checked.",
+        )
+    db.set_email_quote_checked(uid, bool(body.checked))
+    return {"ok": True, "uid": uid, "quote_checked": bool(body.checked)}
 
 
 @app.get("/api/emails/{uid}/attachments/{index}")

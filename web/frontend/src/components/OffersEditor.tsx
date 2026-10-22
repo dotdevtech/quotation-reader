@@ -21,10 +21,10 @@ const SHARED_FIELDS = [
   'VENDOR ADDRESS LINE 1',
   'VENDOR ADDRESS LINE 2',
   'VENDOR ADDRESS LINE 3',
+  'VENDOR ADDRESS COUNTRY',
   'VENDOR ADDRESS CITY',
   'VENDOR ADDRESS STATE',
   'VENDOR ADDRESS ZIP CODE',
-  'VENDOR ADDRESS COUNTRY',
   'VENDOR PHONE',
   'VENDOR FAX',
   'VENDOR EMAIL',
@@ -33,9 +33,8 @@ const SHARED_FIELDS = [
   'PRODUCT LINK',
 ] as const
 
-const SHARED_FIELDS_REST = SHARED_FIELDS.filter(
-  (k) => !(QUOTE_HERO_FIELDS as readonly string[]).includes(k),
-)
+// Keep Country in the address block too (also shown in the hero at top).
+const SHARED_FIELDS_REST = SHARED_FIELDS.filter((k) => k !== 'VENDOR COMPANY')
 
 /** Distinct colors per part tab (cycles if more parts than colors). */
 const PART_TAB_COLORS = [
@@ -171,10 +170,28 @@ function applySharedToAll(offers: Offer[], shared: Offer): Offer[] {
   })
 }
 
+function cleanOffers(offers: Offer[]): Offer[] {
+  return offers
+    .map((o) => {
+      const out: Offer = {}
+      for (const [k, v] of Object.entries(o)) {
+        if (v === null || v === undefined) continue
+        const s = String(v).trim()
+        if (!s || s === 'N/A' || s === 'Unknown') continue
+        out[k] = s
+      }
+      return out
+    })
+    .filter((o) => Object.keys(o).length > 0)
+}
+
+function serializeOffers(offers: Offer[]): string {
+  return JSON.stringify(cleanOffers(offers))
+}
+
 type Props = {
   extractionId: number | null
   offers: Offer[]
-  status?: string
   error?: string | null
   /** Email received date shown as read-only Date (YYYY-MM-DD or display string) */
   emailDate?: string
@@ -184,7 +201,6 @@ type Props = {
 export default function OffersEditor({
   extractionId,
   offers,
-  status,
   error,
   emailDate = '',
   onSaved,
@@ -200,13 +216,21 @@ export default function OffersEditor({
   const [msg, setMsg] = useState('')
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
+  const [baseline, setBaseline] = useState('')
 
   useEffect(() => {
     const next = offers.length ? offers.map((o) => ({ ...o })) : [{}]
+    const sharedNext = pickShared(next)
     setDraft(next)
-    setShared(pickShared(next))
+    setShared(sharedNext)
+    setBaseline(serializeOffers(applySharedToAll(next, sharedNext)))
     setPanel('quote')
+    setMsg('')
   }, [offers])
+
+  const isDirty = useMemo(() => {
+    return serializeOffers(applySharedToAll(draft, shared)) !== baseline
+  }, [draft, shared, baseline])
   useEffect(() => {
     api
       .masterFields()
@@ -289,27 +313,18 @@ export default function OffersEditor({
   }
 
   const save = async () => {
-    if (!extractionId) return
+    if (!extractionId || !isDirty) return
     setBusy(true)
     setMsg('')
     setErr('')
     try {
-      const merged = applySharedToAll(draft, shared)
-      const cleaned = merged
-        .map((o) => {
-          const out: Offer = {}
-          for (const [k, v] of Object.entries(o)) {
-            if (v === null || v === undefined) continue
-            const s = String(v).trim()
-            if (!s || s === 'N/A' || s === 'Unknown') continue
-            out[k] = s
-          }
-          return out
-        })
-        .filter((o) => Object.keys(o).length > 0)
+      const cleaned = cleanOffers(applySharedToAll(draft, shared))
       await api.updateExtraction(extractionId, { offers: cleaned, offer_count: cleaned.length })
-      setDraft(cleaned.length ? cleaned : [{}])
-      setShared(pickShared(cleaned.length ? cleaned : [{}]))
+      const next = cleaned.length ? cleaned : [{}]
+      const sharedNext = pickShared(next)
+      setDraft(next)
+      setShared(sharedNext)
+      setBaseline(serializeOffers(applySharedToAll(next, sharedNext)))
       setMsg(`Saved ${cleaned.length} part line(s) locally.`)
       onSaved?.(cleaned)
     } catch (e) {
@@ -465,7 +480,7 @@ export default function OffersEditor({
       'WIRE PAYMENT': 'Wire Transfer Fee',
       NOTES: 'Additional Notes',
       'VENDOR COMPANY': 'Vendor Name',
-      'VENDOR ADDRESS COUNTRY': 'Country',
+      'VENDOR ADDRESS COUNTRY': 'Vendor Country',
       'PART NUMBER': 'Part Number',
       'ALTERNATE PART NUMBER': 'Alternate Part Number',
       'QUANTITY OFFERED': 'Qty Offered',
@@ -481,12 +496,6 @@ export default function OffersEditor({
   return (
     <div className="flex h-full min-h-0 min-w-0 max-w-full flex-col overflow-hidden bg-slate-50 text-slate-900">
       <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 bg-white px-3 py-2">
-        <div className="text-sm font-semibold text-slate-900">Quotation data</div>
-        {status && (
-          <span className="rounded bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-900">
-            {status}
-          </span>
-        )}
         <div className="ml-auto flex flex-wrap gap-2">
           <button
             type="button"
@@ -506,9 +515,14 @@ export default function OffersEditor({
           </button>
           <button
             type="button"
-            disabled={!extractionId || busy}
+            disabled={!extractionId || busy || !isDirty}
             onClick={save}
-            className="cursor-pointer rounded bg-emerald-600 px-3 py-1 text-xs text-white hover:bg-emerald-500 disabled:opacity-40"
+            title={
+              !isDirty
+                ? 'No changes yet — edit a field to enable save'
+                : 'Save your corrections'
+            }
+            className="cursor-pointer rounded bg-emerald-600 px-3 py-1 text-xs text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-40"
           >
             {busy ? 'Saving…' : 'Save corrections'}
           </button>
