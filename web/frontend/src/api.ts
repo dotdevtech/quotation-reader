@@ -234,6 +234,23 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ email_uids, force }),
     }),
+  extractStatus: () =>
+    request<{
+      scanning: boolean
+      stop_requested: boolean
+      pending_or_running_emails: number
+      active_jobs: number
+    }>('/api/extract/status'),
+  stopExtract: () =>
+    request<{
+      ok: boolean
+      message: string
+      cancelled_extractions: number
+      reset_emails: number
+      cancelled_jobs: number
+      pending_or_running_emails: number
+      active_jobs: number
+    }>('/api/extract/stop', { method: 'POST', body: JSON.stringify({}) }),
   emailExtraction: (uid: string) =>
     request<{
       id?: number

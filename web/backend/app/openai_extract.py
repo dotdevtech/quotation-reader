@@ -20,6 +20,7 @@ from .prompt import (
 from .settings_store import get_app_settings
 
 _queue_lock = threading.Lock()
+_stop_event = threading.Event()
 
 
 def start_extraction_job(email_uids: list[str], force: bool = False) -> int:
@@ -39,6 +40,7 @@ def start_extraction_job(email_uids: list[str], force: bool = False) -> int:
     if not uids:
         raise ValueError("Selected emails already have extracted data. Use force to re-run.")
 
+    _stop_event.clear()
     job_id = db.create_job(uids)
     for uid in uids:
         db.set_email_extraction_status(uid, "pending")
@@ -47,21 +49,82 @@ def start_extraction_job(email_uids: list[str], force: bool = False) -> int:
     return job_id
 
 
+def stop_extraction_jobs() -> dict[str, Any]:
+    """Request stop: finish the current mail (if any), skip the rest of the queue."""
+    _stop_event.set()
+    stats = db.cancel_pending_scans()
+    counts = db.count_active_scans()
+    return {
+        "ok": True,
+        "message": (
+            "Scanning stop requested. Queued mails were cancelled. "
+            "If one mail is mid-scan, it will finish, then the queue stops."
+        ),
+        **stats,
+        **counts,
+    }
+
+
+def get_extraction_queue_status() -> dict[str, Any]:
+    counts = db.count_active_scans()
+    scanning = counts["pending_or_running_emails"] > 0 or counts["active_jobs"] > 0 or (
+        _queue_lock.locked() and not _stop_event.is_set()
+    )
+    return {
+        "scanning": bool(scanning),
+        "stop_requested": _stop_event.is_set(),
+        **counts,
+    }
+
+
 def _run_job(job_id: int) -> None:
     with _queue_lock:
+        if _stop_event.is_set():
+            db.cancel_pending_scans()
+            db.update_job(job_id, "cancelled", error="Stopped by user")
+            return
         db.update_job(job_id, "running")
         job = db.get_job(job_id)
         if not job:
             return
         try:
+            stopped = False
             for ext in job["extractions"]:
+                if _stop_event.is_set():
+                    stopped = True
+                    break
+                # Skip rows already cancelled by stop_extraction_jobs()
+                if (ext.get("status") or "") == "cancelled":
+                    continue
+                # Re-read in case status changed while waiting
+                fresh = db.get_extraction(ext["id"])
+                if fresh and (fresh.get("status") or "") == "cancelled":
+                    continue
+                if (fresh or ext).get("status") in ("completed", "error", "cancelled"):
+                    continue
                 _process_one(ext["id"], ext["email_uid"])
+                if _stop_event.is_set():
+                    stopped = True
+                    break
+
+            if stopped or _stop_event.is_set():
+                db.cancel_pending_scans()
+                db.update_job(job_id, "cancelled", error="Stopped by user")
+                return
+
             job = db.get_job(job_id)
             failed = [e for e in (job or {}).get("extractions", []) if e["status"] == "error"]
+            done_like = [
+                e
+                for e in (job or {}).get("extractions", [])
+                if e["status"] in ("completed", "error", "cancelled")
+            ]
             if failed and len(failed) == len(job["extractions"]):
                 db.update_job(job_id, "error", error="All extractions failed")
             elif failed:
                 db.update_job(job_id, "completed_with_errors")
+            elif len(done_like) == len(job["extractions"]):
+                db.update_job(job_id, "completed")
             else:
                 db.update_job(job_id, "completed")
         except Exception as exc:

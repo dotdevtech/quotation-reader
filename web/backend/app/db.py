@@ -491,6 +491,75 @@ def update_job(job_id: int, status: str, error: Optional[str] = None) -> None:
         conn.commit()
 
 
+def count_active_scans() -> dict[str, int]:
+    """How many emails/jobs are queued or currently scanning."""
+    with connect() as conn:
+        pending_emails = conn.execute(
+            """
+            SELECT COUNT(*) AS c FROM emails
+            WHERE COALESCE(extraction_status, 'none') IN ('pending', 'running')
+            """
+        ).fetchone()["c"]
+        active_jobs = conn.execute(
+            """
+            SELECT COUNT(*) AS c FROM jobs
+            WHERE status IN ('pending', 'running')
+            """
+        ).fetchone()["c"]
+        return {
+            "pending_or_running_emails": int(pending_emails),
+            "active_jobs": int(active_jobs),
+        }
+
+
+def cancel_pending_scans() -> dict[str, int]:
+    """Stop queue: cancel pending extractions/jobs and clear Queued tags.
+
+    The email currently marked running is left alone until that one OpenAI call
+    finishes; the worker then exits and does not start the next mail.
+    """
+    now = _now()
+    with connect() as conn:
+        # Pending extraction rows → cancelled
+        cur_ext = conn.execute(
+            """
+            UPDATE extractions
+            SET status = 'cancelled', error = 'Stopped by user', updated_at = ?
+            WHERE status = 'pending'
+            """,
+            (now,),
+        )
+        cancelled_extractions = cur_ext.rowcount
+
+        # Queued emails back to Quote Received (not scanned)
+        cur_mail = conn.execute(
+            """
+            UPDATE emails
+            SET extraction_status = 'none'
+            WHERE COALESCE(extraction_status, 'none') = 'pending'
+            """
+        )
+        reset_emails = cur_mail.rowcount
+
+        # Jobs waiting or in progress → cancelled
+        cur_jobs = conn.execute(
+            """
+            UPDATE jobs
+            SET status = 'cancelled', error = 'Stopped by user', updated_at = ?
+            WHERE status IN ('pending', 'running')
+            """,
+            (now,),
+        )
+        cancelled_jobs = cur_jobs.rowcount
+        conn.commit()
+
+    return {
+        "cancelled_extractions": int(cancelled_extractions or 0),
+        "reset_emails": int(reset_emails or 0),
+        "cancelled_jobs": int(cancelled_jobs or 0),
+    }
+
+
 def get_job(job_id: int) -> Optional[dict[str, Any]]:
     with connect() as conn:
         row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()

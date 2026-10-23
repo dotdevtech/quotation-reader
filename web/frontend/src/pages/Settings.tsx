@@ -10,6 +10,13 @@ export default function Settings() {
   const [busy, setBusy] = useState(false)
   const [clearBusy, setClearBusy] = useState(false)
   const [clearConfirm, setClearConfirm] = useState('')
+  const [stopBusy, setStopBusy] = useState(false)
+  const [scanStatus, setScanStatus] = useState<{
+    scanning: boolean
+    stop_requested: boolean
+    pending_or_running_emails: number
+    active_jobs: number
+  } | null>(null)
 
   useEffect(() => {
     api
@@ -29,6 +36,24 @@ export default function Settings() {
         })
       })
       .catch((e) => setError(String(e)))
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    const refresh = () => {
+      api
+        .extractStatus()
+        .then((s) => {
+          if (!cancelled) setScanStatus(s)
+        })
+        .catch(() => undefined)
+    }
+    refresh()
+    const t = setInterval(refresh, 3000)
+    return () => {
+      cancelled = true
+      clearInterval(t)
+    }
   }, [])
 
   const set = (key: keyof AppSettings, value: string | number) => {
@@ -167,6 +192,56 @@ export default function Settings() {
             {busy ? 'Saving…' : 'Save settings'}
           </button>
         </form>
+
+        <section className="mx-auto mt-8 max-w-xl rounded-xl border border-amber-300 bg-gradient-to-br from-white to-amber-50 p-5 shadow-sm">
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-amber-900">
+            Stop scanning
+          </h2>
+          <p className="mt-2 text-sm text-slate-600">
+            If a large scan queue is running (Queued / Scanning), press stop here. Already scanned
+            mails stay saved. Queued mails go back to Quote Received so you can scan them later.
+          </p>
+          <p className="mt-2 text-sm text-slate-700">
+            {scanStatus == null
+              ? 'Checking scan status…'
+              : scanStatus.scanning || scanStatus.pending_or_running_emails > 0
+                ? scanStatus.stop_requested
+                  ? `Stopping… ${scanStatus.pending_or_running_emails} mail(s) still marked active (current mail may finish first).`
+                  : `Scanning in progress — ${scanStatus.pending_or_running_emails} mail(s) queued or running.`
+                : 'No scan queue is running right now.'}
+          </p>
+          <button
+            type="button"
+            disabled={
+              stopBusy ||
+              (!scanStatus?.scanning &&
+                !(scanStatus && scanStatus.pending_or_running_emails > 0))
+            }
+            onClick={async () => {
+              const ok = window.confirm(
+                'Stop the scan queue?\n\nQueued mails will be cancelled. The mail currently scanning may finish, then scanning stops.\n\nContinue?',
+              )
+              if (!ok) return
+              setStopBusy(true)
+              setError('')
+              setMsg('')
+              try {
+                const res = await api.stopExtract()
+                setMsg(
+                  `${res.message} Cleared ${res.reset_emails} queued mail(s), cancelled ${res.cancelled_jobs} job(s).`,
+                )
+                setScanStatus(await api.extractStatus())
+              } catch (err) {
+                setError(String(err))
+              } finally {
+                setStopBusy(false)
+              }
+            }}
+            className="mt-4 cursor-pointer rounded-lg bg-amber-700 px-5 py-2.5 text-sm font-semibold text-white hover:bg-amber-600 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {stopBusy ? 'Stopping…' : 'Stop scanning'}
+          </button>
+        </section>
 
         <section className="mx-auto mt-8 max-w-xl rounded-xl border border-red-300 bg-gradient-to-br from-white to-red-50 p-5 shadow-sm">
           <h2 className="text-sm font-semibold uppercase tracking-wide text-red-800">

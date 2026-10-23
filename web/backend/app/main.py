@@ -25,7 +25,11 @@ from .imap_sync import (
     set_auto_sync_config,
     start_sync,
 )
-from .openai_extract import start_extraction_job
+from .openai_extract import (
+    get_extraction_queue_status,
+    start_extraction_job,
+    stop_extraction_jobs,
+)
 from .settings_store import get_app_settings, public_settings, seed_settings_from_env, update_app_settings
 
 # Built React app: web/frontend/dist (relative to web/backend)
@@ -367,6 +371,17 @@ def extract(body: ExtractRequest) -> dict[str, Any]:
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"job_id": job_id}
+
+
+@app.get("/api/extract/status", dependencies=[Depends(require_auth)])
+def extract_status() -> dict[str, Any]:
+    return get_extraction_queue_status()
+
+
+@app.post("/api/extract/stop", dependencies=[Depends(require_auth)])
+def extract_stop() -> dict[str, Any]:
+    """Stop the scan queue (Settings → Stop scanning)."""
+    return stop_extraction_jobs()
 
 
 @app.get("/api/emails/{uid}/extraction", dependencies=[Depends(require_auth)])
