@@ -196,6 +196,8 @@ type Props = {
   /** Email received date shown as read-only Date (YYYY-MM-DD or display string) */
   emailDate?: string
   onSaved?: (offers: Offer[]) => void
+  /** Notifies parent when unsaved edits change (for Prev/Next warnings). */
+  onDirtyChange?: (dirty: boolean) => void
 }
 
 export default function OffersEditor({
@@ -204,6 +206,7 @@ export default function OffersEditor({
   error,
   emailDate = '',
   onSaved,
+  onDirtyChange,
 }: Props) {
   const [conditionOpts, setConditionOpts] = useState(DEFAULT_CONDITION)
   const [priceTypeOpts, setPriceTypeOpts] = useState(DEFAULT_PRICE_TYPE)
@@ -231,6 +234,10 @@ export default function OffersEditor({
   }, [draft, shared, baseline])
   dirtyRef.current = isDirty
   baselineRef.current = baseline
+
+  useEffect(() => {
+    onDirtyChange?.(isDirty)
+  }, [isDirty, onDirtyChange])
 
   useEffect(() => {
     const next = offers.length ? offers.map((o) => ({ ...o })) : [{}]

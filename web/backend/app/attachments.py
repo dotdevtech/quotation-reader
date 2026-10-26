@@ -128,6 +128,17 @@ def clear_all_attachment_files() -> int:
     return removed
 
 
+def clear_email_attachment_files(uid: str) -> bool:
+    """Remove on-disk attachments for one email uid."""
+    import shutil
+
+    path = attachment_dir(uid)
+    if path.is_dir():
+        shutil.rmtree(path, ignore_errors=True)
+        return True
+    return False
+
+
 def store_attachments(uid: str, attachments: list[AttachmentInfo]) -> list[dict[str, Any]]:
     """Write document attachments to disk (skips images)."""
     dest = attachment_dir(uid)

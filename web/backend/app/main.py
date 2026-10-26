@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import db
-from .attachments import clear_all_attachment_files
+from .attachments import clear_all_attachment_files, clear_email_attachment_files
 from .auth import create_session, destroy_session, require_auth, session_valid, validate_login
 from .config import get_settings
 from .forward import export_extraction, forward_emails, forward_extraction
@@ -291,6 +291,41 @@ def set_quote_check(uid: str, body: QuoteCheckRequest = QuoteCheckRequest()) -> 
         )
     db.set_email_quote_checked(uid, bool(body.checked))
     return {"ok": True, "uid": uid, "quote_checked": bool(body.checked)}
+
+
+class FlagRequest(BaseModel):
+    flagged: bool = True
+
+
+@app.post("/api/emails/{uid}/flag", dependencies=[Depends(require_auth)])
+def set_email_flag(uid: str, body: FlagRequest = FlagRequest()) -> dict[str, Any]:
+    """Flag a quote for thorough manual review (Flag tab)."""
+    email = db.get_email(uid)
+    if not email:
+        raise HTTPException(status_code=404, detail="Email not found")
+    if body.flagged and (email.get("extraction_status") or "none") != "completed":
+        raise HTTPException(status_code=400, detail="Scan the quote first before flagging.")
+    if body.flagged and (email.get("forward_status") or "none") == "sent":
+        raise HTTPException(status_code=400, detail="Already added to system — cannot flag.")
+    db.set_email_flagged(uid, bool(body.flagged))
+    return {"ok": True, "uid": uid, "flagged": bool(body.flagged)}
+
+
+@app.delete("/api/emails/{uid}", dependencies=[Depends(require_auth)])
+def delete_email(uid: str) -> dict[str, Any]:
+    """Delete one email from the local inbox (not from the real mailbox)."""
+    email = db.get_email(uid)
+    if not email:
+        raise HTTPException(status_code=404, detail="Email not found")
+    ok = db.delete_email_local(uid)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Email not found")
+    clear_email_attachment_files(uid)
+    return {
+        "ok": True,
+        "uid": uid,
+        "message": "Email removed from this app. Your real mailbox was not changed.",
+    }
 
 
 @app.get("/api/emails/{uid}/attachments/{index}")

@@ -101,6 +101,15 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE emails ADD COLUMN quote_checked INTEGER NOT NULL DEFAULT 0"
         )
+    if "flagged" not in cols:
+        conn.execute(
+            "ALTER TABLE emails ADD COLUMN flagged INTEGER NOT NULL DEFAULT 0"
+        )
+    else:
+        # Ensure legacy/null values never look "flagged" by accident
+        conn.execute(
+            "UPDATE emails SET flagged = 0 WHERE flagged IS NULL OR flagged NOT IN (0, 1)"
+        )
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS sessions (
@@ -257,9 +266,10 @@ def list_emails(
             clauses.append("(date_iso IS NOT NULL AND substr(date_iso, 1, 10) <= ?)")
             params.append(day_to)
     folder_key = (folder or "").strip().lower()
-    if folder_key in ("email", "scanned", "checked", "sent"):
+    if folder_key in ("email", "scanned", "flagged", "checked", "sent"):
         # email = Quote Received (not scanned)
-        # scanned = scanned, not checked, not sent
+        # scanned = scanned, not flagged, not checked, not sent
+        # flagged = marked for thorough manual review
         # checked = reviewed/checked, waiting to add to system
         # sent = Added to system
         if folder_key == "email":
@@ -268,6 +278,10 @@ def list_emails(
         elif folder_key == "scanned":
             clauses.append("COALESCE(extraction_status, 'none') = 'completed'")
             clauses.append("COALESCE(quote_checked, 0) = 0")
+            clauses.append("COALESCE(flagged, 0) = 0")
+            clauses.append("COALESCE(forward_status, 'none') != 'sent'")
+        elif folder_key == "flagged":
+            clauses.append("COALESCE(flagged, 0) = 1")
             clauses.append("COALESCE(forward_status, 'none') != 'sent'")
         elif folder_key == "checked":
             clauses.append("COALESCE(extraction_status, 'none') = 'completed'")
@@ -295,6 +309,7 @@ def list_emails(
                    COALESCE(extraction_status, 'none') AS extraction_status,
                    COALESCE(forward_status, 'none') AS forward_status,
                    COALESCE(quote_checked, 0) AS quote_checked,
+                   COALESCE(flagged, 0) AS flagged,
                    latest_extraction_id,
                    CASE WHEN body_text IS NOT NULL OR body_html IS NOT NULL THEN 1 ELSE 0 END AS body_loaded,
                    (
@@ -318,6 +333,7 @@ def list_emails(
         for r in rows:
             d = dict(r)
             d["quote_checked"] = bool(d.get("quote_checked"))
+            d["flagged"] = bool(d.get("flagged"))
             items.append(d)
         return items, int(total)
 
@@ -342,11 +358,39 @@ def is_email_quote_checked(uid: str) -> bool:
 
 def set_email_quote_checked(uid: str, checked: bool) -> None:
     with connect() as conn:
+        if checked:
+            # Checked quotes leave the Flag tab
+            conn.execute(
+                "UPDATE emails SET quote_checked = 1, flagged = 0 WHERE uid = ?",
+                (uid,),
+            )
+        else:
+            conn.execute(
+                "UPDATE emails SET quote_checked = 0 WHERE uid = ?",
+                (uid,),
+            )
+        conn.commit()
+
+
+def set_email_flagged(uid: str, flagged: bool) -> None:
+    with connect() as conn:
         conn.execute(
-            "UPDATE emails SET quote_checked = ? WHERE uid = ?",
-            (1 if checked else 0, uid),
+            "UPDATE emails SET flagged = ? WHERE uid = ?",
+            (1 if flagged else 0, uid),
         )
         conn.commit()
+
+
+def delete_email_local(uid: str) -> bool:
+    """Remove one email + its extractions from local DB. Returns True if deleted."""
+    with connect() as conn:
+        exists = conn.execute("SELECT uid FROM emails WHERE uid = ?", (uid,)).fetchone()
+        if not exists:
+            return False
+        conn.execute("DELETE FROM extractions WHERE email_uid = ?", (uid,))
+        conn.execute("DELETE FROM emails WHERE uid = ?", (uid,))
+        conn.commit()
+        return True
 
 
 def get_email_extraction_status(uid: str) -> str:
@@ -369,7 +413,8 @@ def set_email_extraction_status(
                 conn.execute(
                     """
                     UPDATE emails
-                    SET extraction_status = ?, latest_extraction_id = ?, quote_checked = 0
+                    SET extraction_status = ?, latest_extraction_id = ?,
+                        quote_checked = 0, flagged = 0
                     WHERE uid = ?
                     """,
                     (status, extraction_id, uid),
@@ -388,7 +433,7 @@ def set_email_extraction_status(
                 conn.execute(
                     """
                     UPDATE emails
-                    SET extraction_status = ?, quote_checked = 0
+                    SET extraction_status = ?, quote_checked = 0, flagged = 0
                     WHERE uid = ?
                     """,
                     (status, uid),
@@ -689,6 +734,7 @@ def _email_row(row: sqlite3.Row) -> dict[str, Any]:
     d = dict(row)
     d["has_attachments"] = bool(d.get("has_attachments"))
     d["quote_checked"] = bool(d.get("quote_checked"))
+    d["flagged"] = bool(d.get("flagged"))
     d["attachments"] = json.loads(d.get("attachments_json") or "[]")
     d.pop("attachments_json", None)
     return d

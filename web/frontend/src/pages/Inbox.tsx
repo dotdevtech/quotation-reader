@@ -40,7 +40,7 @@ function shortFrom(from: string) {
   return from.length > 42 ? from.slice(0, 42) + '…' : from
 }
 
-type MailFolder = 'email' | 'scanned' | 'checked' | 'sent'
+type MailFolder = 'email' | 'scanned' | 'flagged' | 'checked' | 'sent'
 
 const FOLDER_TABS: { value: MailFolder; label: string; hint: string }[] = [
   { value: 'email', label: 'Quote Received', hint: 'Synced — need to scan' },
@@ -51,6 +51,11 @@ const FOLDER_TABS: { value: MailFolder; label: string; hint: string }[] = [
     hint: 'Marked checked — ready to Add to system',
   },
   { value: 'sent', label: 'Added to system', hint: 'Sent to Google Sheet' },
+  {
+    value: 'flagged',
+    label: 'Flag',
+    hint: 'Flagged for thorough manual review',
+  },
 ]
 
 const DATE_PRESETS = [
@@ -146,15 +151,18 @@ function MailListTags({
   error,
   forwardStatus,
   quoteChecked,
+  flagged,
 }: {
   status?: string
   error?: string | null
   forwardStatus?: string
   quoteChecked?: boolean | number
+  flagged?: boolean | number
 }) {
   const s = status || 'none'
   const f = forwardStatus || 'none'
   const checked = Boolean(quoteChecked)
+  flagged = Boolean(flagged)
 
   let label = 'Quote Received'
   let cls = 'bg-slate-600 text-white'
@@ -172,6 +180,9 @@ function MailListTags({
     cls = 'bg-amber-600 text-white'
   } else if (s === 'error') {
     label = 'Scan error'
+    cls = 'bg-red-600 text-white'
+  } else if (flagged && f !== 'sent') {
+    label = 'Flagged'
     cls = 'bg-red-600 text-white'
   } else if (s === 'completed' && checked) {
     label = 'Checked'
@@ -196,15 +207,9 @@ function MailListTags({
 function WorkflowBadges({
   workflow,
   size = 'md',
-  checked,
-  canMarkChecked,
-  onMarkChecked,
 }: {
   workflow: ReturnType<typeof quoteWorkflow>
   size?: 'md' | 'lg'
-  checked?: boolean
-  canMarkChecked?: boolean
-  onMarkChecked?: () => void
 }) {
   const pad = size === 'lg' ? 'px-3 py-1 text-sm' : 'px-2.5 py-1 text-xs'
   return (
@@ -222,24 +227,6 @@ function WorkflowBadges({
         >
           To do: {workflow.todo}
         </span>
-      ) : null}
-      {checked ? (
-        <span
-          className={`rounded-md font-bold leading-tight ${pad} bg-lime-700 text-white border border-lime-800 shadow-sm`}
-          title="Reviewed and marked checked"
-        >
-          Checked ✓
-        </span>
-      ) : onMarkChecked ? (
-        <button
-          type="button"
-          disabled={!canMarkChecked}
-          onClick={onMarkChecked}
-          className={`cursor-pointer rounded-md font-bold leading-tight ${pad} bg-lime-600 text-white border border-lime-700 shadow-sm hover:bg-lime-500 disabled:cursor-not-allowed disabled:opacity-40`}
-          title={canMarkChecked ? 'Confirm you reviewed this quote' : 'Scan first'}
-        >
-          Mark checked
-        </button>
       ) : null}
     </div>
   )
@@ -261,7 +248,9 @@ export default function Inbox() {
     scanned: 0,
     checked: 0,
     sent: 0,
+    flagged: 0,
   })
+  const [offersDirty, setOffersDirty] = useState(false)
   const [datePreset, setDatePreset] = useState('')
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [activeUid, setActiveUid] = useState<string | null>(null)
@@ -359,7 +348,7 @@ export default function Inbox() {
   const loadFolderCounts = useCallback(async () => {
     try {
       const entries = await Promise.all(
-        (['email', 'scanned', 'checked', 'sent'] as MailFolder[]).map(async (f) => {
+        (['email', 'scanned', 'flagged', 'checked', 'sent'] as MailFolder[]).map(async (f) => {
           const data = await api.emails({
             q: qDebounced,
             date_from: filterDates.date_from,
@@ -504,6 +493,8 @@ export default function Inbox() {
 
   const goCompareEmail = (uid: string | null | undefined) => {
     if (!uid || busy) return
+    if (!confirmLeaveUnsaved()) return
+    setOffersDirty(false)
     void openEmail(uid, { keepCompare: true })
   }
 
@@ -633,10 +624,14 @@ export default function Inbox() {
         await api.setQuoteChecked(uid, true)
       }
       setEmails((prev) =>
-        prev.map((e) => (ready.includes(e.uid) ? { ...e, quote_checked: true } : e)),
+        prev.map((e) =>
+          ready.includes(e.uid) ? { ...e, quote_checked: true, flagged: false } : e,
+        ),
       )
       setDetail((prev) =>
-        prev && ready.includes(prev.uid) ? { ...prev, quote_checked: true } : prev,
+        prev && ready.includes(prev.uid)
+          ? { ...prev, quote_checked: true, flagged: false }
+          : prev,
       )
       if (!uidsOverride && selected.size) setSelected(new Set())
       setJobMsg(
@@ -649,6 +644,71 @@ export default function Inbox() {
     } catch (e) {
       setError(String(e))
     }
+  }
+
+  const flagActiveQuote = async () => {
+    if (!activeUid || extractionStatus !== 'completed') {
+      setError('Scan the quote first before flagging.')
+      return
+    }
+    const alreadySent =
+      detail?.forward_status === 'sent' ||
+      emails.find((e) => e.uid === activeUid)?.forward_status === 'sent'
+    if (alreadySent) {
+      setError('Already added to system — cannot flag.')
+      return
+    }
+    setError('')
+    try {
+      await api.setFlagged(activeUid, true)
+      setDetail((prev) => (prev ? { ...prev, flagged: true } : prev))
+      setEmails((prev) =>
+        prev.map((e) => (e.uid === activeUid ? { ...e, flagged: true } : e)),
+      )
+      setJobMsg('Flagged for thorough review — find it later in the Flag tab.')
+      // Stay on current tab (e.g. Scanned); mail leaves this list after refresh.
+      setCompareOpen(false)
+      setActiveUid(null)
+      setDetail(null)
+      setOffers([])
+      await loadEmails()
+      void loadFolderCounts()
+    } catch (e) {
+      setError(String(e))
+    }
+  }
+
+  const deleteActiveEmail = async () => {
+    if (!activeUid) return
+    const subject = detail?.subject || activeUid
+    const ok = window.confirm(
+      `Are you sure you want to delete this quotation?\n\n"${subject}"\n\nThis removes it from this app only. Your real mailbox is NOT changed.\n\nContinue?`,
+    )
+    if (!ok) return
+    const ok2 = window.confirm('Final confirmation: permanently remove this email from the local inbox?')
+    if (!ok2) return
+    setError('')
+    try {
+      const res = await api.deleteEmail(activeUid)
+      setJobMsg(res.message)
+      setCompareOpen(false)
+      setActiveUid(null)
+      setDetail(null)
+      setOffers([])
+      setExtractionId(null)
+      setOffersDirty(false)
+      await loadEmails()
+      void loadFolderCounts()
+    } catch (e) {
+      setError(String(e))
+    }
+  }
+
+  const confirmLeaveUnsaved = () => {
+    if (!offersDirty) return true
+    return window.confirm(
+      'You have unsaved changes in Quote data.\n\nIf you leave now, those edits will be lost.\n\nLeave without saving?',
+    )
   }
 
   const sendToSheet = async (uidsOverride?: string[]) => {
@@ -846,7 +906,7 @@ export default function Inbox() {
 
       <div className="grid min-h-0 min-w-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-2">
         <section className="flex min-h-0 min-w-0 flex-col overflow-hidden border-r border-slate-200 bg-white/90">
-          <div className="grid grid-cols-4 gap-1 border-b border-slate-200 bg-white px-1 py-1">
+          <div className="grid grid-cols-5 gap-1 border-b border-slate-200 bg-white px-1 py-1">
             {FOLDER_TABS.map((t) => {
               const active = folder === t.value
               const count = folderCounts[t.value]
@@ -865,19 +925,26 @@ export default function Inbox() {
                         badgeActive: 'bg-white text-emerald-700',
                         badgeIdle: 'bg-emerald-700 text-white',
                       }
-                    : t.value === 'checked'
+                    : t.value === 'flagged'
                       ? {
-                          active: 'bg-lime-700 text-white shadow-sm ring-1 ring-lime-300',
-                          idle: 'bg-lime-100 text-lime-900 hover:bg-lime-200',
-                          badgeActive: 'bg-white text-lime-700',
-                          badgeIdle: 'bg-lime-700 text-white',
+                          active: 'bg-rose-700 text-white shadow-sm ring-1 ring-rose-300',
+                          idle: 'bg-rose-100 text-rose-900 hover:bg-rose-200',
+                          badgeActive: 'bg-white text-rose-700',
+                          badgeIdle: 'bg-rose-700 text-white',
                         }
-                      : {
-                          active: 'bg-sky-700 text-white shadow-sm ring-1 ring-sky-300',
-                          idle: 'bg-sky-100 text-sky-800 hover:bg-sky-200',
-                          badgeActive: 'bg-white text-sky-700',
-                          badgeIdle: 'bg-sky-700 text-white',
-                        }
+                      : t.value === 'checked'
+                        ? {
+                            active: 'bg-lime-700 text-white shadow-sm ring-1 ring-lime-300',
+                            idle: 'bg-lime-100 text-lime-900 hover:bg-lime-200',
+                            badgeActive: 'bg-white text-lime-700',
+                            badgeIdle: 'bg-lime-700 text-white',
+                          }
+                        : {
+                            active: 'bg-sky-700 text-white shadow-sm ring-1 ring-sky-300',
+                            idle: 'bg-sky-100 text-sky-800 hover:bg-sky-200',
+                            badgeActive: 'bg-white text-sky-700',
+                            badgeIdle: 'bg-sky-700 text-white',
+                          }
               return (
                 <button
                   key={t.value}
@@ -950,6 +1017,7 @@ export default function Inbox() {
               <div className="p-8 text-center text-sm text-slate-500">
                 {folder === 'email' && 'No Quote Received emails waiting to scan.'}
                 {folder === 'scanned' && 'No scanned quotes waiting to be checked.'}
+                {folder === 'flagged' && 'No flagged quotes waiting for thorough review.'}
                 {folder === 'checked' && 'No checked quotes waiting to Add to system.'}
                 {folder === 'sent' && 'Nothing added to the system yet.'}
                 {filtersActive && ' Try clearing search/date filters.'}{' '}
@@ -1001,6 +1069,7 @@ export default function Inbox() {
                       error={e.extraction_error}
                       forwardStatus={e.forward_status}
                       quoteChecked={e.quote_checked}
+                      flagged={e.flagged}
                     />
                   </div>
                 </div>
@@ -1110,20 +1179,10 @@ export default function Inbox() {
                       {detail.date_str}
                     </p>
                     <div className="mt-2">
-                      <WorkflowBadges
-                        workflow={compareWorkflow}
-                        size="lg"
-                        checked={compareChecked || compareIsSent}
-                        canMarkChecked={
-                          compareIsScanned && !compareChecked && !compareIsSent && !busy
-                        }
-                        onMarkChecked={() =>
-                          void markQuoteChecked(activeUid ? [activeUid] : [])
-                        }
-                      />
+                      <WorkflowBadges workflow={compareWorkflow} size="lg" />
                     </div>
                   </div>
-                  <div className="flex shrink-0 gap-1.5">
+                  <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
                     <button
                       type="button"
                       onClick={() => setCompareOpen(true)}
@@ -1131,6 +1190,21 @@ export default function Inbox() {
                     >
                       Check Quote
                     </button>
+                    {!compareChecked && !compareIsSent ? (
+                      <button
+                        type="button"
+                        disabled={!compareIsScanned || busy || !activeUid}
+                        onClick={() => void markQuoteChecked(activeUid ? [activeUid] : [])}
+                        className="cursor-pointer rounded bg-lime-600 px-2.5 py-1 text-[11px] font-bold text-white hover:bg-lime-500 disabled:cursor-not-allowed disabled:opacity-40"
+                        title={
+                          compareIsScanned
+                            ? 'Confirm you reviewed this quote'
+                            : 'Scan first'
+                        }
+                      >
+                        Mark checked
+                      </button>
+                    ) : null}
                     <button
                       type="button"
                       disabled={!canAddToSystem}
@@ -1263,63 +1337,106 @@ export default function Inbox() {
         <div className="fixed inset-0 z-50 flex max-w-[100vw] flex-col overflow-hidden bg-slate-900/40 backdrop-blur-sm">
           <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-slate-200 bg-white px-4 py-2.5">
             <span className="text-sm font-semibold text-slate-800">Check Quote</span>
-            <WorkflowBadges
-              workflow={compareWorkflow}
-              size="lg"
-              checked={compareChecked || compareIsSent}
-              canMarkChecked={
-                compareIsScanned && !compareChecked && !compareIsSent && !busy && Boolean(activeUid)
-              }
-              onMarkChecked={() => void markQuoteChecked(activeUid ? [activeUid] : [])}
-            />
+            <WorkflowBadges workflow={compareWorkflow} size="lg" />
             <span className="min-w-0 flex-1 truncate text-xs text-slate-500">
               {busy ? 'Loading…' : detail.subject}
             </span>
-            <button
-              type="button"
-              disabled={!canComparePrev || busy}
-              onClick={goComparePrev}
-              className="cursor-pointer rounded-md bg-violet-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-violet-600 disabled:opacity-40"
-            >
-              ← Prev
-            </button>
-            <span className="text-xs tabular-nums text-slate-500">
-              {globalEmailIndex >= 0 ? globalEmailIndex + 1 : '—'} / {total}
-            </span>
-            <button
-              type="button"
-              disabled={!canCompareNext || busy}
-              onClick={goCompareNext}
-              className="cursor-pointer rounded-md bg-indigo-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-600 disabled:opacity-40"
-            >
-              Next →
-            </button>
-            <button
-              type="button"
-              disabled={!canAddToSystem}
-              onClick={() => activeUid && sendToSheet([activeUid])}
-              className="cursor-pointer rounded-md bg-emerald-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-600 disabled:opacity-40"
-              title={
-                !compareChecked
-                  ? 'Mark checked first'
+            <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+              <button
+                type="button"
+                disabled={!canComparePrev || busy}
+                onClick={goComparePrev}
+                className="cursor-pointer rounded-md bg-violet-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-violet-600 disabled:opacity-40"
+              >
+                ← Prev
+              </button>
+              <span className="text-xs tabular-nums text-slate-500">
+                {globalEmailIndex >= 0 ? globalEmailIndex + 1 : '—'} / {total}
+              </span>
+              <button
+                type="button"
+                disabled={!canCompareNext || busy}
+                onClick={goCompareNext}
+                className="cursor-pointer rounded-md bg-indigo-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-600 disabled:opacity-40"
+              >
+                Next →
+              </button>
+              <button
+                type="button"
+                disabled={
+                  !compareIsScanned ||
+                  compareIsSent ||
+                  busy ||
+                  !activeUid ||
+                  Boolean(detail.flagged)
+                }
+                onClick={() => void flagActiveQuote()}
+                className="cursor-pointer rounded-md bg-red-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-40"
+                title={
+                  detail.flagged
+                    ? 'Already in Flag tab'
+                    : compareIsScanned
+                      ? 'Move to Flag tab for thorough review'
+                      : 'Scan first'
+                }
+              >
+                {detail.flagged ? 'Flagged' : 'Flag'}
+              </button>
+              {!compareChecked && !compareIsSent ? (
+                <button
+                  type="button"
+                  disabled={!compareIsScanned || busy || !activeUid}
+                  onClick={() => void markQuoteChecked(activeUid ? [activeUid] : [])}
+                  className="cursor-pointer rounded-md bg-lime-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-lime-500 disabled:cursor-not-allowed disabled:opacity-40"
+                  title={
+                    compareIsScanned ? 'Confirm you reviewed this quote' : 'Scan first'
+                  }
+                >
+                  Mark checked
+                </button>
+              ) : null}
+              {(folder === 'flagged' || Boolean(detail.flagged)) && (
+                <button
+                  type="button"
+                  disabled={!activeUid || busy}
+                  onClick={() => void deleteActiveEmail()}
+                  className="cursor-pointer rounded-md bg-rose-800 px-3 py-1.5 text-xs font-bold text-white hover:bg-rose-700 disabled:opacity-40"
+                  title="Delete from this app (not from real mailbox)"
+                >
+                  Delete
+                </button>
+              )}
+              <button
+                type="button"
+                disabled={!canAddToSystem}
+                onClick={() => activeUid && sendToSheet([activeUid])}
+                className="cursor-pointer rounded-md bg-emerald-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-600 disabled:opacity-40"
+                title={
+                  !compareChecked
+                    ? 'Mark checked first'
+                    : compareIsSent
+                      ? 'Resend to Google Sheet'
+                      : 'Add to system (Google Sheet)'
+                }
+              >
+                {sendingSheet
+                  ? 'Sending…'
                   : compareIsSent
-                    ? 'Resend to Google Sheet'
-                    : 'Add to system (Google Sheet)'
-              }
-            >
-              {sendingSheet
-                ? 'Sending…'
-                : compareIsSent
-                  ? 'Resend'
-                  : 'Add to system'}
-            </button>
-            <button
-              type="button"
-              onClick={() => setCompareOpen(false)}
-              className="cursor-pointer rounded-md bg-slate-800 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-700"
-            >
-              Close
-            </button>
+                    ? 'Resend'
+                    : 'Add to system'}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (!confirmLeaveUnsaved()) return
+                  setOffersDirty(false)
+                  setCompareOpen(false)
+                }}
+                className="cursor-pointer rounded-md bg-slate-800 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-700"
+              >
+                Close
+              </button>
+            </div>
           </div>
           <div className="relative grid min-h-0 min-w-0 flex-1 grid-cols-1 overflow-hidden md:grid-cols-2">
             {busy && (
@@ -1344,8 +1461,10 @@ export default function Inbox() {
                   detail.date_str ||
                   ''
                 }
+                onDirtyChange={setOffersDirty}
                 onSaved={(next) => {
                   setOffers(next)
+                  setOffersDirty(false)
                   setExtractionStatus('completed')
                   void loadEmails()
                   void loadFolderCounts()

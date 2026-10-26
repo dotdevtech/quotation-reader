@@ -84,6 +84,8 @@ export type EmailSummary = {
   extraction_forwarded?: number | boolean
   /** Reviewed in Check Quote — required before Add to system */
   quote_checked?: boolean | number
+  /** Flagged for thorough manual review */
+  flagged?: boolean | number
 }
 
 export type EmailDetail = EmailSummary & {
@@ -203,8 +205,8 @@ export const api = {
     date_to?: string
     extraction_status?: string
     forward_status?: string
-    /** email | scanned (unchecked) | checked (ready to add) | sent */
-    folder?: 'email' | 'scanned' | 'checked' | 'sent'
+    /** email | scanned | flagged | checked | sent */
+    folder?: 'email' | 'scanned' | 'flagged' | 'checked' | 'sent'
     limit?: number
     offset?: number
   }) => {
@@ -295,6 +297,16 @@ export const api = {
     request<{ ok: boolean; uid: string; quote_checked: boolean }>(
       `/api/emails/${encodeURIComponent(uid)}/quote-check`,
       { method: 'POST', body: JSON.stringify({ checked }) },
+    ),
+  setFlagged: (uid: string, flagged = true) =>
+    request<{ ok: boolean; uid: string; flagged: boolean }>(
+      `/api/emails/${encodeURIComponent(uid)}/flag`,
+      { method: 'POST', body: JSON.stringify({ flagged }) },
+    ),
+  deleteEmail: (uid: string) =>
+    request<{ ok: boolean; uid: string; message: string }>(
+      `/api/emails/${encodeURIComponent(uid)}`,
+      { method: 'DELETE' },
     ),
   exportUrl: (id: number) => `/api/extractions/${id}/download`,
   attachmentUrl: (emailUid: string, index: number, inline = true) => {
