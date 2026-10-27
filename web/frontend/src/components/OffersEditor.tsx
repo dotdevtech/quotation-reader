@@ -36,16 +36,21 @@ const SHARED_FIELDS = [
 // Keep Country in the address block too (also shown in the hero at top).
 const SHARED_FIELDS_REST = SHARED_FIELDS.filter((k) => k !== 'VENDOR COMPANY')
 
-/** Distinct colors per part tab (cycles if more parts than colors). */
+/** Inactive tabs are plain gray. The open tab is the only one with a color and underline. */
+const TAB_IDLE = 'border-b-2 border-transparent text-slate-500 hover:text-slate-800'
+
+const QUOTE_TAB_ACTIVE = 'border-b-2 border-rose-600 bg-white text-rose-700'
+
+/** Accent for the open part tab (cycles if more parts than colors). */
 const PART_TAB_COLORS = [
-  { active: 'border-2 border-b-0 border-sky-600 bg-sky-100 text-sky-950 shadow-sm', idle: 'border-2 border-sky-400 bg-sky-50 text-sky-800 hover:bg-sky-100' },
-  { active: 'border-2 border-b-0 border-cyan-600 bg-cyan-100 text-cyan-950 shadow-sm', idle: 'border-2 border-cyan-400 bg-cyan-50 text-cyan-800 hover:bg-cyan-100' },
-  { active: 'border-2 border-b-0 border-amber-600 bg-amber-100 text-amber-950 shadow-sm', idle: 'border-2 border-amber-400 bg-amber-50 text-amber-900 hover:bg-amber-100' },
-  { active: 'border-2 border-b-0 border-emerald-600 bg-emerald-100 text-emerald-950 shadow-sm', idle: 'border-2 border-emerald-400 bg-emerald-50 text-emerald-800 hover:bg-emerald-100' },
-  { active: 'border-2 border-b-0 border-rose-600 bg-rose-100 text-rose-950 shadow-sm', idle: 'border-2 border-rose-400 bg-rose-50 text-rose-800 hover:bg-rose-100' },
-  { active: 'border-2 border-b-0 border-orange-600 bg-orange-100 text-orange-950 shadow-sm', idle: 'border-2 border-orange-400 bg-orange-50 text-orange-900 hover:bg-orange-100' },
-  { active: 'border-2 border-b-0 border-teal-600 bg-teal-100 text-teal-950 shadow-sm', idle: 'border-2 border-teal-400 bg-teal-50 text-teal-800 hover:bg-teal-100' },
-  { active: 'border-2 border-b-0 border-lime-600 bg-lime-100 text-lime-950 shadow-sm', idle: 'border-2 border-lime-400 bg-lime-50 text-lime-800 hover:bg-lime-100' },
+  { active: 'border-b-2 border-sky-600 bg-white text-sky-800' },
+  { active: 'border-b-2 border-cyan-600 bg-white text-cyan-800' },
+  { active: 'border-b-2 border-amber-500 bg-white text-amber-800' },
+  { active: 'border-b-2 border-emerald-600 bg-white text-emerald-800' },
+  { active: 'border-b-2 border-rose-600 bg-white text-rose-800' },
+  { active: 'border-b-2 border-orange-500 bg-white text-orange-800' },
+  { active: 'border-b-2 border-teal-600 bg-white text-teal-800' },
+  { active: 'border-b-2 border-lime-600 bg-white text-lime-800' },
 ] as const
 
 /** Changes per part line inside one email. */
@@ -575,14 +580,13 @@ export default function OffersEditor({
       )}
 
       {extractionId && (
-        <div className="flex gap-1 overflow-x-auto border-b border-slate-200 bg-white px-3 pt-2">
+        <div className="flex gap-1 overflow-x-auto border-b border-slate-200 bg-slate-50 px-2">
           <button
             type="button"
             onClick={() => setPanel('quote')}
-            className={`cursor-pointer rounded-t px-3 py-2 text-xs font-semibold ${
-              panel === 'quote'
-                ? 'border border-b-0 border-slate-200 bg-slate-50 text-red-800'
-                : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+            aria-pressed={panel === 'quote'}
+            className={`-mb-px cursor-pointer shrink-0 rounded-t-md px-3 py-2 text-xs font-semibold ${
+              panel === 'quote' ? QUOTE_TAB_ACTIVE : TAB_IDLE
             }`}
           >
             Quote data
@@ -590,19 +594,21 @@ export default function OffersEditor({
           {draft.map((_, i) => {
             const colors = PART_TAB_COLORS[i % PART_TAB_COLORS.length]
             const active = panel === i
+            const pn = draft[i]?.['PART NUMBER']
+              ? String(draft[i]['PART NUMBER']).slice(0, 16)
+              : ''
             return (
               <button
                 key={i}
                 type="button"
                 onClick={() => setPanel(i)}
-                className={`cursor-pointer rounded-t px-3.5 py-2.5 text-xs font-bold ${
-                  active ? colors.active : colors.idle
+                aria-pressed={active}
+                className={`-mb-px cursor-pointer shrink-0 rounded-t-md px-3 py-2 text-xs font-semibold ${
+                  active ? colors.active : TAB_IDLE
                 }`}
               >
                 Part {i + 1}
-                {draft[i]?.['PART NUMBER']
-                  ? ` · ${String(draft[i]['PART NUMBER']).slice(0, 16)}`
-                  : ''}
+                {pn ? ` · ${pn}` : ''}
               </button>
             )
           })}
@@ -651,16 +657,15 @@ export default function OffersEditor({
               <div className="flex flex-wrap justify-center gap-2">
                 {draft.map((o, i) => {
                   const pn = o['PART NUMBER'] != null ? String(o['PART NUMBER']).trim() : ''
-                  const colors = PART_TAB_COLORS[i % PART_TAB_COLORS.length]
                   return (
                     <button
                       key={i}
                       type="button"
                       onClick={() => setPanel(i)}
-                      title={`Open Part ${i + 1}`}
-                      className={`cursor-pointer rounded-md border-2 px-3 py-1.5 text-sm font-bold ${colors.idle}`}
+                      title={pn || `Part ${i + 1}`}
+                      className="cursor-pointer rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-semibold text-slate-800 hover:border-sky-400 hover:bg-sky-50"
                     >
-                      {pn || `Part ${i + 1} (no P/N)`}
+                      {pn || `Part ${i + 1}`}
                     </button>
                   )
                 })}

@@ -1,6 +1,7 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { api, type AppSettings } from '../api'
 import AppNav from '../components/AppNav'
+import ConfirmDialog, { type ConfirmOptions } from '../components/ConfirmDialog'
 
 export default function Settings() {
   const [form, setForm] = useState<Partial<AppSettings>>({})
@@ -17,6 +18,22 @@ export default function Settings() {
     pending_or_running_emails: number
     active_jobs: number
   } | null>(null)
+  const [confirmDlg, setConfirmDlg] = useState<
+    (ConfirmOptions & { resolve: (ok: boolean) => void }) | null
+  >(null)
+
+  const askConfirm = useCallback((opts: ConfirmOptions) => {
+    return new Promise<boolean>((resolve) => {
+      setConfirmDlg({ ...opts, resolve })
+    })
+  }, [])
+
+  const closeConfirm = useCallback((ok: boolean) => {
+    setConfirmDlg((cur) => {
+      cur?.resolve(ok)
+      return null
+    })
+  }, [])
 
   useEffect(() => {
     api
@@ -218,9 +235,14 @@ export default function Settings() {
                 !(scanStatus && scanStatus.pending_or_running_emails > 0))
             }
             onClick={async () => {
-              const ok = window.confirm(
-                'Stop the scan queue?\n\nQueued mails will be cancelled. The mail currently scanning may finish, then scanning stops.\n\nContinue?',
-              )
+              const ok = await askConfirm({
+                title: 'Stop the scan queue?',
+                message:
+                  'Queued mails will be cancelled. The mail currently scanning may finish, then scanning stops.',
+                confirmLabel: 'Stop scanning',
+                cancelLabel: 'Keep scanning',
+                variant: 'warning',
+              })
               if (!ok) return
               setStopBusy(true)
               setError('')
@@ -271,9 +293,14 @@ export default function Settings() {
             type="button"
             disabled={clearBusy || clearConfirm.trim().toUpperCase() !== 'DELETE'}
             onClick={async () => {
-              const ok = window.confirm(
-                'Are you sure?\n\nThis will empty the Inbox on this system (all local emails, scans, and attachments).\n\nYour real email account is NOT deleted.\n\nContinue?',
-              )
+              const ok = await askConfirm({
+                title: 'Clear all local emails?',
+                message:
+                  'This empties the Inbox on this system (all local emails, scans, and attachments). Your real email account is not deleted.',
+                confirmLabel: 'Clear everything',
+                cancelLabel: 'Cancel',
+                variant: 'danger',
+              })
               if (!ok) return
               setClearBusy(true)
               setError('')
@@ -296,6 +323,18 @@ export default function Settings() {
           </button>
         </section>
       </div>
+
+      <ConfirmDialog
+        open={Boolean(confirmDlg)}
+        title={confirmDlg?.title || ''}
+        message={confirmDlg?.message || ''}
+        detail={confirmDlg?.detail}
+        confirmLabel={confirmDlg?.confirmLabel}
+        cancelLabel={confirmDlg?.cancelLabel}
+        variant={confirmDlg?.variant}
+        onConfirm={() => closeConfirm(true)}
+        onCancel={() => closeConfirm(false)}
+      />
     </div>
   )
 }

@@ -14,6 +14,7 @@ const PAGE_SIZE_OPTIONS = [50, 100, 150, 200] as const
 import OffersEditor from '../components/OffersEditor'
 import AttachmentPreviewPanel from '../components/AttachmentPreviewPanel'
 import AppNav from '../components/AppNav'
+import ConfirmDialog, { type ConfirmOptions } from '../components/ConfirmDialog'
 import { downloadAttachmentFile } from '../openAttachment'
 
 /** Local calendar YYYY-MM-DD (not UTC — avoids off-by-one near midnight). */
@@ -90,7 +91,7 @@ function quoteWorkflow(opts: {
     return {
       current: checked ? 'Checked' : s === 'completed' ? 'Scanned' : 'Quote Received',
       // Must be checked before Add — if not checked yet, that comes first
-      todo: checked ? 'Add to system (retry)' : 'Mark checked first',
+      todo: checked ? 'Move to Added to system (retry)' : 'Move to Checked',
       currentClass: 'bg-orange-600 text-white border border-orange-700 shadow-sm',
       todoClass,
     }
@@ -123,7 +124,7 @@ function quoteWorkflow(opts: {
   if (s === 'completed' && checked) {
     return {
       current: 'Checked',
-      todo: 'Add to system',
+      todo: 'Move to Added to system',
       currentClass: 'bg-violet-600 text-white border border-violet-700 shadow-sm',
       todoClass,
     }
@@ -131,8 +132,8 @@ function quoteWorkflow(opts: {
   if (s === 'completed') {
     return {
       current: 'Scanned',
-      // Scanned but not marked checked — must review & Mark checked before Add
-      todo: 'Mark checked first',
+      // Scanned but not checked — review, then Move to Checked before adding
+      todo: 'Move to Checked',
       currentClass: 'bg-emerald-600 text-white border border-emerald-700 shadow-sm',
       todoClass,
     }
@@ -266,7 +267,23 @@ export default function Inbox() {
   const [extractionError, setExtractionError] = useState<string | null>(null)
   const [compareOpen, setCompareOpen] = useState(false)
   const [previewTabKey, setPreviewTabKey] = useState<string>('email')
+  const [confirmDlg, setConfirmDlg] = useState<
+    (ConfirmOptions & { resolve: (ok: boolean) => void }) | null
+  >(null)
   const loadSeq = useRef(0)
+
+  const askConfirm = useCallback((opts: ConfirmOptions) => {
+    return new Promise<boolean>((resolve) => {
+      setConfirmDlg({ ...opts, resolve })
+    })
+  }, [])
+
+  const closeConfirm = useCallback((ok: boolean) => {
+    setConfirmDlg((cur) => {
+      cur?.resolve(ok)
+      return null
+    })
+  }, [])
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
   const rangeStart = total === 0 ? 0 : (page - 1) * pageSize + 1
@@ -491,9 +508,9 @@ export default function Inbox() {
   const canComparePrev = globalEmailIndex > 0
   const canCompareNext = globalEmailIndex >= 0 && globalEmailIndex < total - 1
 
-  const goCompareEmail = (uid: string | null | undefined) => {
+  const goCompareEmail = async (uid: string | null | undefined) => {
     if (!uid || busy) return
-    if (!confirmLeaveUnsaved()) return
+    if (!(await confirmLeaveUnsaved())) return
     setOffersDirty(false)
     void openEmail(uid, { keepCompare: true })
   }
@@ -503,9 +520,11 @@ export default function Inbox() {
     if (offset < 0 || offset >= total || busy) return
     const localIdx = offset - (page - 1) * pageSize
     if (localIdx >= 0 && localIdx < emails.length) {
-      goCompareEmail(emails[localIdx]?.uid)
+      await goCompareEmail(emails[localIdx]?.uid)
       return
     }
+    if (!(await confirmLeaveUnsaved())) return
+    setOffersDirty(false)
     setBusy(true)
     try {
       const data = await api.emails({
@@ -594,6 +613,56 @@ export default function Inbox() {
     return Boolean(emails.find((e) => e.uid === uid)?.quote_checked)
   }
 
+  /**
+   * After the open quote leaves the current folder (Checked / Flag), keep Check Quote
+   * open on the next remaining mail — or the previous one if that was the last.
+   */
+  const advanceCompareAfterLeave = async (
+    leaveGlobalIndex: number,
+    leaveTotal: number,
+  ) => {
+    const remaining = leaveTotal - 1
+    if (remaining <= 0 || leaveGlobalIndex < 0) {
+      setCompareOpen(false)
+      setActiveUid(null)
+      setDetail(null)
+      setOffers([])
+      setExtractionId(null)
+      setOffersDirty(false)
+      return
+    }
+    const offset =
+      leaveGlobalIndex < leaveTotal - 1 ? leaveGlobalIndex : leaveGlobalIndex - 1
+    const targetPage = Math.floor(offset / pageSize) + 1
+    if (targetPage !== page) setPage(targetPage)
+    setBusy(true)
+    setOffersDirty(false)
+    try {
+      const data = await api.emails({
+        q: qDebounced,
+        date_from: filterDates.date_from,
+        date_to: filterDates.date_to,
+        folder,
+        limit: 1,
+        offset,
+      })
+      const uid = data.items[0]?.uid
+      if (!uid) {
+        setCompareOpen(false)
+        setActiveUid(null)
+        setDetail(null)
+        setOffers([])
+        setExtractionId(null)
+        setBusy(false)
+        return
+      }
+      await openEmail(uid, { keepCompare: true })
+    } catch (e) {
+      setBusy(false)
+      setError(String(e))
+    }
+  }
+
   const markQuoteChecked = async (uidsOverride?: string[]) => {
     const uids = uidsOverride?.length
       ? uidsOverride
@@ -618,59 +687,161 @@ export default function Inbox() {
       setError('Select scanned quotes that are not checked yet.')
       return
     }
+    const shouldAdvance =
+      compareOpen && Boolean(activeUid) && ready.includes(activeUid)
+    if (shouldAdvance && !(await confirmLeaveUnsaved())) return
+    const leaveIndex = globalEmailIndex
+    const leaveTotal = total
     setError('')
     try {
       for (const uid of ready) {
         await api.setQuoteChecked(uid, true)
       }
-      setEmails((prev) =>
-        prev.map((e) =>
-          ready.includes(e.uid) ? { ...e, quote_checked: true, flagged: false } : e,
-        ),
-      )
-      setDetail((prev) =>
-        prev && ready.includes(prev.uid)
-          ? { ...prev, quote_checked: true, flagged: false }
-          : prev,
-      )
+      if (!shouldAdvance) {
+        setEmails((prev) =>
+          prev.map((e) =>
+            ready.includes(e.uid) ? { ...e, quote_checked: true, flagged: false } : e,
+          ),
+        )
+        setDetail((prev) =>
+          prev && ready.includes(prev.uid)
+            ? { ...prev, quote_checked: true, flagged: false }
+            : prev,
+        )
+      }
       if (!uidsOverride && selected.size) setSelected(new Set())
       setJobMsg(
         ready.length === 1
-          ? 'Marked as checked. You can Add to system now.'
-          : `Marked ${ready.length} quotes as checked.`,
+          ? shouldAdvance
+            ? 'Moved to Checked — opening next quote.'
+            : 'Moved to Checked. You can Add to system now.'
+          : `Moved ${ready.length} quotes to Checked.`,
       )
       await loadEmails()
       void loadFolderCounts()
+      if (shouldAdvance) {
+        await advanceCompareAfterLeave(leaveIndex, leaveTotal)
+      }
     } catch (e) {
       setError(String(e))
     }
   }
 
-  const flagActiveQuote = async () => {
-    if (!activeUid || extractionStatus !== 'completed') {
-      setError('Scan the quote first before flagging.')
+  const canFlagUid = (uid: string) => {
+    if (uid === activeUid) {
+      if (extractionStatus !== 'completed') return false
+      if (detail?.flagged || emails.find((x) => x.uid === uid)?.flagged) return false
+      const fwd =
+        detail?.forward_status ||
+        emails.find((x) => x.uid === uid)?.forward_status
+      return fwd !== 'sent'
+    }
+    const e = emails.find((x) => x.uid === uid)
+    return (
+      e?.extraction_status === 'completed' &&
+      !e.flagged &&
+      e.forward_status !== 'sent'
+    )
+  }
+
+  const flagQuotes = async (uidsOverride?: string[]) => {
+    const uids = uidsOverride?.length
+      ? uidsOverride
+      : activeUid && selected.size === 0
+        ? [activeUid]
+        : [...selected]
+    const ready = uids.filter((uid) => canFlagUid(uid))
+    if (ready.length === 0) {
+      setError('Select scanned quotes that are not flagged or already added to system.')
       return
     }
-    const alreadySent =
-      detail?.forward_status === 'sent' ||
-      emails.find((e) => e.uid === activeUid)?.forward_status === 'sent'
-    if (alreadySent) {
-      setError('Already added to system — cannot flag.')
-      return
-    }
+    const shouldAdvance =
+      compareOpen && Boolean(activeUid) && ready.includes(activeUid)
+    if (shouldAdvance && !(await confirmLeaveUnsaved())) return
+    const leaveIndex = globalEmailIndex
+    const leaveTotal = total
     setError('')
     try {
-      await api.setFlagged(activeUid, true)
-      setDetail((prev) => (prev ? { ...prev, flagged: true } : prev))
-      setEmails((prev) =>
-        prev.map((e) => (e.uid === activeUid ? { ...e, flagged: true } : e)),
+      for (const uid of ready) {
+        await api.setFlagged(uid, true)
+      }
+      if (!shouldAdvance) {
+        setEmails((prev) =>
+          prev.map((e) => (ready.includes(e.uid) ? { ...e, flagged: true } : e)),
+        )
+        setDetail((prev) =>
+          prev && ready.includes(prev.uid) ? { ...prev, flagged: true } : prev,
+        )
+      }
+      if (!uidsOverride && selected.size) setSelected(new Set())
+      if (uidsOverride?.length && selected.size) {
+        setSelected((prev) => {
+          const next = new Set(prev)
+          for (const uid of ready) next.delete(uid)
+          return next
+        })
+      }
+      setJobMsg(
+        ready.length === 1
+          ? shouldAdvance
+            ? 'Moved to Flag — opening next quote.'
+            : 'Moved to Flag — find it later in the Flag tab.'
+          : `Moved ${ready.length} quotes to Flag.`,
       )
-      setJobMsg('Flagged for thorough review — find it later in the Flag tab.')
-      // Stay on current tab (e.g. Scanned); mail leaves this list after refresh.
+      await loadEmails()
+      void loadFolderCounts()
+      if (shouldAdvance) {
+        await advanceCompareAfterLeave(leaveIndex, leaveTotal)
+      }
+    } catch (e) {
+      setError(String(e))
+    }
+  }
+
+  const deleteEmailByUid = async (uid: string, subjectHint?: string) => {
+    if (!uid) return
+    const subject =
+      subjectHint ||
+      (detail?.uid === uid ? detail.subject : undefined) ||
+      emails.find((e) => e.uid === uid)?.subject ||
+      uid
+    const ok = await askConfirm({
+      title: 'Delete this quotation?',
+      message:
+        'This removes it from Quotation Reader only. Your real mailbox is not changed.',
+      detail: subject || '(no subject)',
+      confirmLabel: 'Yes, delete',
+      cancelLabel: 'Keep it',
+      variant: 'danger',
+    })
+    if (!ok) return
+    const ok2 = await askConfirm({
+      title: 'Final confirmation',
+      message: 'Permanently remove this email from the local inbox? This cannot be undone.',
+      detail: subject || '(no subject)',
+      confirmLabel: 'Delete permanently',
+      cancelLabel: 'Cancel',
+      variant: 'danger',
+    })
+    if (!ok2) return
+    setError('')
+    try {
+      const res = await api.deleteEmail(uid)
+      setJobMsg(res.message)
       setCompareOpen(false)
-      setActiveUid(null)
-      setDetail(null)
-      setOffers([])
+      if (activeUid === uid) {
+        setActiveUid(null)
+        setDetail(null)
+        setOffers([])
+        setExtractionId(null)
+        setOffersDirty(false)
+      }
+      setSelected((prev) => {
+        if (!prev.has(uid)) return prev
+        const next = new Set(prev)
+        next.delete(uid)
+        return next
+      })
       await loadEmails()
       void loadFolderCounts()
     } catch (e) {
@@ -680,35 +851,19 @@ export default function Inbox() {
 
   const deleteActiveEmail = async () => {
     if (!activeUid) return
-    const subject = detail?.subject || activeUid
-    const ok = window.confirm(
-      `Are you sure you want to delete this quotation?\n\n"${subject}"\n\nThis removes it from this app only. Your real mailbox is NOT changed.\n\nContinue?`,
-    )
-    if (!ok) return
-    const ok2 = window.confirm('Final confirmation: permanently remove this email from the local inbox?')
-    if (!ok2) return
-    setError('')
-    try {
-      const res = await api.deleteEmail(activeUid)
-      setJobMsg(res.message)
-      setCompareOpen(false)
-      setActiveUid(null)
-      setDetail(null)
-      setOffers([])
-      setExtractionId(null)
-      setOffersDirty(false)
-      await loadEmails()
-      void loadFolderCounts()
-    } catch (e) {
-      setError(String(e))
-    }
+    await deleteEmailByUid(activeUid, detail?.subject)
   }
 
-  const confirmLeaveUnsaved = () => {
+  const confirmLeaveUnsaved = async () => {
     if (!offersDirty) return true
-    return window.confirm(
-      'You have unsaved changes in Quote data.\n\nIf you leave now, those edits will be lost.\n\nLeave without saving?',
-    )
+    return askConfirm({
+      title: 'Unsaved changes',
+      message:
+        'You have unsaved edits in Quote data. If you leave now, those changes will be lost.',
+      confirmLabel: 'Leave without saving',
+      cancelLabel: 'Stay',
+      variant: 'warning',
+    })
   }
 
   const sendToSheet = async (uidsOverride?: string[]) => {
@@ -719,13 +874,13 @@ export default function Inbox() {
       return emails.some((e) => e.uid === uid && e.extraction_status === 'completed')
     })
     if (scannedUids.length === 0) {
-      setError('Scan the quote first, then Check Quote and Mark checked before adding to system.')
+      setError('Scan the quote first, then Check Quote and Move to Checked before adding to system.')
       return
     }
     const readyUids = scannedUids.filter((uid) => isQuoteChecked(uid))
     if (readyUids.length === 0) {
       setError(
-        'Only checked quotes can be added to the system. Open Check Quote, review, then click Mark checked.',
+        'Only checked quotes can be added to the system. Open Check Quote, review, then click Move to Checked.',
       )
       return
     }
@@ -741,11 +896,16 @@ export default function Inbox() {
       return (fromList || fromDetail) === 'sent'
     })
     if (alreadySent.length > 0) {
-      const ok = window.confirm(
-        alreadySent.length === 1 && readyUids.length === 1
-          ? 'This quotation was already sent to Google Sheet.\n\nDo you want to send it again?'
-          : `${alreadySent.length} of ${readyUids.length} selected quotation(s) were already sent to Google Sheet.\n\nDo you want to send them again?`,
-      )
+      const ok = await askConfirm({
+        title: 'Already added to system',
+        message:
+          alreadySent.length === 1 && readyUids.length === 1
+            ? 'This quotation was already sent to Google Sheet. Do you want to send it again?'
+            : `${alreadySent.length} of ${readyUids.length} selected quotation(s) were already sent to Google Sheet. Do you want to send them again?`,
+        confirmLabel: 'Send again',
+        cancelLabel: 'Cancel',
+        variant: 'warning',
+      })
       if (!ok) return
     }
     setJobMsg(`Sending ${readyUids.length} quotation(s) to Google Sheet…`)
@@ -1034,6 +1194,7 @@ export default function Inbox() {
             {emails.map((e, i) => {
               const active = e.uid === activeUid
               const checked = selected.has(e.uid)
+              const canDelete = folder === 'flagged' || Boolean(e.flagged)
               return (
                 <div
                   key={e.uid}
@@ -1056,7 +1217,22 @@ export default function Inbox() {
                       >
                         {shortFrom(e.from_addr)}
                       </span>
-                      <span className="shrink-0 text-xs text-slate-500">{e.date_str}</span>
+                      <div className="flex shrink-0 items-center gap-1.5">
+                        <span className="text-xs text-slate-500">{e.date_str}</span>
+                        {canDelete ? (
+                          <button
+                            type="button"
+                            title="Delete from this app (not from real mailbox)"
+                            className="cursor-pointer rounded bg-rose-700 px-1.5 py-0.5 text-[10px] font-bold text-white hover:bg-rose-600"
+                            onClick={(ev) => {
+                              ev.stopPropagation()
+                              void deleteEmailByUid(e.uid, e.subject)
+                            }}
+                          >
+                            Delete
+                          </button>
+                        ) : null}
+                      </div>
                     </div>
                     <div className="mt-0.5 flex items-center gap-2">
                       <span className="truncate text-sm text-slate-600">
@@ -1099,7 +1275,7 @@ export default function Inbox() {
             </button>
           </div>
 
-          <div className="grid grid-cols-2 gap-1.5 border-t border-rose-200 bg-gradient-to-r from-rose-50 to-sky-50 px-2 py-2 sm:grid-cols-4">
+          <div className="grid grid-cols-2 gap-1.5 border-t border-rose-200 bg-gradient-to-r from-rose-50 to-sky-50 px-2 py-2 sm:grid-cols-3 lg:grid-cols-5">
             <button
               type="button"
               disabled={selected.size === 0}
@@ -1121,6 +1297,17 @@ export default function Inbox() {
             <button
               type="button"
               disabled={
+                selected.size === 0 || ![...selected].some((uid) => canFlagUid(uid))
+              }
+              onClick={() => void flagQuotes([...selected])}
+              className="cursor-pointer rounded bg-red-600 px-1 py-1.5 text-[11px] font-semibold text-white shadow-sm hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-40"
+              title="Move selected scanned quotes to Flag"
+            >
+              Move to Flag{selected.size ? ` (${selected.size})` : ''}
+            </button>
+            <button
+              type="button"
+              disabled={
                 selected.size === 0 ||
                 ![...selected].some((uid) =>
                   emails.some(
@@ -1134,9 +1321,9 @@ export default function Inbox() {
               }
               onClick={() => void markQuoteChecked([...selected])}
               className="cursor-pointer rounded bg-lime-600 px-1 py-1.5 text-[11px] font-semibold text-white shadow-sm hover:bg-lime-500 disabled:cursor-not-allowed disabled:opacity-40"
-              title="Mark selected scanned quotes as checked"
+              title="Move selected scanned quotes to Checked"
             >
-              Mark{selected.size ? ` (${selected.size})` : ''}
+              Move to Checked{selected.size ? ` (${selected.size})` : ''}
             </button>
             <button
               type="button"
@@ -1154,9 +1341,9 @@ export default function Inbox() {
               }
               onClick={() => sendToSheet()}
               className="cursor-pointer rounded bg-sky-700 px-1 py-1.5 text-[11px] font-semibold text-white shadow-sm hover:bg-sky-600 disabled:cursor-not-allowed disabled:opacity-40"
-              title="Add checked quotes to system (Google Sheet)"
+              title="Move checked quotes to Added to system (Google Sheet)"
             >
-              {sendingSheet ? 'Sending…' : 'Add'}
+              {sendingSheet ? 'Sending…' : 'Move to system'}
             </button>
           </div>
         </section>
@@ -1190,6 +1377,27 @@ export default function Inbox() {
                     >
                       Check Quote
                     </button>
+                    <button
+                      type="button"
+                      disabled={
+                        !compareIsScanned ||
+                        compareIsSent ||
+                        busy ||
+                        !activeUid ||
+                        Boolean(detail.flagged)
+                      }
+                      onClick={() => void flagQuotes(activeUid ? [activeUid] : [])}
+                      className="cursor-pointer rounded bg-red-600 px-2.5 py-1 text-[11px] font-bold text-white hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-40"
+                      title={
+                        detail.flagged
+                          ? 'Already in Flag tab'
+                          : compareIsScanned
+                            ? 'Move this quote to the Flag tab'
+                            : 'Scan first'
+                      }
+                    >
+                      {detail.flagged ? 'In Flag' : 'Move to Flag'}
+                    </button>
                     {!compareChecked && !compareIsSent ? (
                       <button
                         type="button"
@@ -1198,13 +1406,24 @@ export default function Inbox() {
                         className="cursor-pointer rounded bg-lime-600 px-2.5 py-1 text-[11px] font-bold text-white hover:bg-lime-500 disabled:cursor-not-allowed disabled:opacity-40"
                         title={
                           compareIsScanned
-                            ? 'Confirm you reviewed this quote'
+                            ? 'Move this quote to the Checked tab'
                             : 'Scan first'
                         }
                       >
-                        Mark checked
+                        Move to Checked
                       </button>
                     ) : null}
+                    {(folder === 'flagged' || Boolean(detail.flagged)) && (
+                      <button
+                        type="button"
+                        disabled={!activeUid || busy}
+                        onClick={() => void deleteActiveEmail()}
+                        className="cursor-pointer rounded bg-rose-800 px-2.5 py-1 text-[11px] font-bold text-white hover:bg-rose-700 disabled:opacity-40"
+                        title="Delete from this app (not from real mailbox)"
+                      >
+                        Delete
+                      </button>
+                    )}
                     <button
                       type="button"
                       disabled={!canAddToSystem}
@@ -1214,17 +1433,17 @@ export default function Inbox() {
                         compareIsSent
                           ? 'Already added — click to resend'
                           : !compareIsScanned
-                            ? 'Scan first, then Check Quote and Mark checked'
+                            ? 'Scan first, then Check Quote and Move to Checked'
                             : !compareChecked
-                              ? 'Open Check Quote and Mark checked before adding'
-                              : 'Add this quote to the system (Google Sheet)'
+                              ? 'Open Check Quote and Move to Checked before adding'
+                              : 'Move this quote to Added to system (Google Sheet)'
                       }
                     >
                       {sendingSheet
                         ? '…'
                         : compareIsSent
                           ? 'Resend'
-                          : 'Add to system'}
+                          : 'Move to Added to system'}
                     </button>
                   </div>
                 </div>
@@ -1370,7 +1589,7 @@ export default function Inbox() {
                   !activeUid ||
                   Boolean(detail.flagged)
                 }
-                onClick={() => void flagActiveQuote()}
+                onClick={() => void flagQuotes(activeUid ? [activeUid] : [])}
                 className="cursor-pointer rounded-md bg-red-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-40"
                 title={
                   detail.flagged
@@ -1380,7 +1599,7 @@ export default function Inbox() {
                       : 'Scan first'
                 }
               >
-                {detail.flagged ? 'Flagged' : 'Flag'}
+                {detail.flagged ? 'In Flag' : 'Move to Flag'}
               </button>
               {!compareChecked && !compareIsSent ? (
                 <button
@@ -1389,10 +1608,10 @@ export default function Inbox() {
                   onClick={() => void markQuoteChecked(activeUid ? [activeUid] : [])}
                   className="cursor-pointer rounded-md bg-lime-600 px-3 py-1.5 text-xs font-bold text-white hover:bg-lime-500 disabled:cursor-not-allowed disabled:opacity-40"
                   title={
-                    compareIsScanned ? 'Confirm you reviewed this quote' : 'Scan first'
+                    compareIsScanned ? 'Move this quote to the Checked tab' : 'Scan first'
                   }
                 >
-                  Mark checked
+                  Move to Checked
                 </button>
               ) : null}
               {(folder === 'flagged' || Boolean(detail.flagged)) && (
@@ -1413,24 +1632,26 @@ export default function Inbox() {
                 className="cursor-pointer rounded-md bg-emerald-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-600 disabled:opacity-40"
                 title={
                   !compareChecked
-                    ? 'Mark checked first'
+                    ? 'Move to Checked first'
                     : compareIsSent
                       ? 'Resend to Google Sheet'
-                      : 'Add to system (Google Sheet)'
+                      : 'Move to Added to system (Google Sheet)'
                 }
               >
                 {sendingSheet
                   ? 'Sending…'
                   : compareIsSent
                     ? 'Resend'
-                    : 'Add to system'}
+                    : 'Move to Added to system'}
               </button>
               <button
                 type="button"
                 onClick={() => {
-                  if (!confirmLeaveUnsaved()) return
-                  setOffersDirty(false)
-                  setCompareOpen(false)
+                  void (async () => {
+                    if (!(await confirmLeaveUnsaved())) return
+                    setOffersDirty(false)
+                    setCompareOpen(false)
+                  })()
                 }}
                 className="cursor-pointer rounded-md bg-slate-800 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-700"
               >
@@ -1474,6 +1695,18 @@ export default function Inbox() {
           </div>
         </div>
       )}
+
+      <ConfirmDialog
+        open={Boolean(confirmDlg)}
+        title={confirmDlg?.title || ''}
+        message={confirmDlg?.message || ''}
+        detail={confirmDlg?.detail}
+        confirmLabel={confirmDlg?.confirmLabel}
+        cancelLabel={confirmDlg?.cancelLabel}
+        variant={confirmDlg?.variant}
+        onConfirm={() => closeConfirm(true)}
+        onCancel={() => closeConfirm(false)}
+      />
     </div>
   )
 }
