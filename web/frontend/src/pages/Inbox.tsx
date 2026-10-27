@@ -687,8 +687,9 @@ export default function Inbox() {
       setError('Select scanned quotes that are not checked yet.')
       return
     }
+    const advanceUid = activeUid
     const shouldAdvance =
-      compareOpen && Boolean(activeUid) && ready.includes(activeUid)
+      compareOpen && advanceUid != null && ready.includes(advanceUid)
     if (shouldAdvance && !(await confirmLeaveUnsaved())) return
     const leaveIndex = globalEmailIndex
     const leaveTotal = total
@@ -755,8 +756,9 @@ export default function Inbox() {
       setError('Select scanned quotes that are not flagged or already added to system.')
       return
     }
+    const advanceUid = activeUid
     const shouldAdvance =
-      compareOpen && Boolean(activeUid) && ready.includes(activeUid)
+      compareOpen && advanceUid != null && ready.includes(advanceUid)
     if (shouldAdvance && !(await confirmLeaveUnsaved())) return
     const leaveIndex = globalEmailIndex
     const leaveTotal = total
